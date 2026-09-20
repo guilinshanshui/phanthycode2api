@@ -70,30 +70,97 @@ type anthropicTool struct {
 	InputSchema any    `json:"input_schema"`
 }
 
-// ModelAlias 客户端可见模型名 → 上游真实模型名。
-// Phanthy 官网是商业命名（DeepSeek-V4 等），上游 /v1/messages 需要真实模型名（Iris-1.0 等）。
-var ModelAlias = map[string]string{
-	"DeepSeek-V4":        "Iris-1.0",
-	"gpt-5.6-sol":        "Zeus-1.1-pro",
-	"gpt-5.6-terra":      "Zeus-1.1",
-	"gpt-5.6-luna":       "Zeus-1.1-fast",
-	"gpt-5.5":            "Zeus-1.0-pro",
-	"Claude Opus 4.8":    "Gaia-1.2",
-	"Claude Opus 4.7":    "Gaia-1.1",
-	"Claude Sonnet 4.6":  "Gaia-1.0",
-	"Kimi K3":            "Apollo-2.0",
-	"Kimi-k2.7-code":     "Apollo-1.1",
-	"Kimi K2.6":          "Apollo-1.0",
-	"GLM 5.2":            "Metis-1.1",
-	"GLM-5.1":            "Metis-1.0",
+// CanonicalModel 上游公开模型条目。
+type CanonicalModel struct {
+	ID      string
+	Context int // 上下文窗口（token）
 }
 
-// ResolveModel 解析客户端模型名 → 上游真实名；未命中的原样返回。
+// CanonicalModels 上游当前公开可选的模型，与官网定价页一致。
+// 既是 /v1/models 的数据源，也是别名表的解析目标。
+// 注意：账号具体能用哪些取决于套餐，未开放的会返回 403 model_not_allowed。
+var CanonicalModels = []CanonicalModel{
+	{"phanthy-fast", 1050000},
+	{"phanthy-pro", 1050000},
+	{"phanthy-ultra", 1050000},
+	{"glm-5.3-flash", 1000000},
+	{"glm-5.3", 1000000},
+	{"glm-5.2", 1000000},
+	{"glm-5.1", 200000},
+	{"kimi-k3", 1048576},
+	{"kimi-k2.7-code", 262144},
+	{"deepseek-v4.1-flash", 1048576},
+}
+
+// modelSuffixes 客户端可能携带的上下文后缀。
+// 官网客户端会给大上下文模型追加 [1m] / [2m]，但上游 /v1/messages 只认裸模型名，
+// 带后缀会直接吃 403 model_not_allowed，因此这里统一剥离。
+var modelSuffixes = []string{"[1m]", "[2m]", ":1m", ":2m"}
+
+// normalizeModel 归一化客户端模型名：去首尾空白 → 小写 → 去上下文后缀 →
+// 内部空白折成 "-"（让 "Kimi K3" 这类展示名落到 kimi-k3）。
+func normalizeModel(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	for _, suffix := range modelSuffixes {
+		s = strings.TrimSuffix(s, suffix)
+	}
+	s = strings.TrimSpace(s)
+	if strings.ContainsAny(s, " \t") {
+		s = strings.Join(strings.Fields(s), "-")
+	}
+	return s
+}
+
+// ModelAlias 归一化模型名 → 上游模型 ID（键均已做过 normalizeModel）。
+//
+// 只需登记「必须改名」的条目：能直接归一化成规范 ID 的展示名
+// （"Kimi K3" → kimi-k3、"GLM 5.2" → glm-5.2）不用列，归一化后就是正确 ID。
+var ModelAlias = map[string]string{
+	// Auto：官网 Auto 落在最经济的公开档。
+	"auto":         "phanthy-fast",
+	"phanthy-auto": "phanthy-fast",
+
+	// 历史商业命名 → 当前公开 ID。
+	"deepseek-v4":             "deepseek-v4.1-flash",
+	"deepseek-v4.1":           "deepseek-v4.1-flash",
+	"phanthy.com/deepseek-v4": "deepseek-v4.1-flash",
+
+	// Claude 展示名用点号，上游 ID 用连字符。
+	"claude-opus-4.8":   "claude-opus-4-8",
+	"claude-opus-4.7":   "claude-opus-4-7",
+	"claude-sonnet-4.6": "claude-sonnet-4-6",
+	"claude-haiku-4.5":  "claude-haiku-4-5",
+
+	// GPT 档位：上游把 phanthy-pro / phanthy-ultra 路由到对应后端（响应回显已确认）。
+	"gpt-5.6-sol": "phanthy-pro",
+	"gpt-6-astra": "phanthy-ultra",
+
+	// 上游内部代号 → 当前公开 ID。
+	// 这些代号曾是旧版映射的目标，但已不在上游可调用目录里，直接透传只会拿到 403。
+	"iris-1.0":        "deepseek-v4.1-flash",
+	"zeus-1.1-pro":    "phanthy-pro",
+	"zeus-1.1":        "phanthy-pro",
+	"zeus-1.1-fast":   "phanthy-fast",
+	"zeus-1.0-pro":    "phanthy-pro",
+	"gaia-1.2":        "claude-opus-4-8",
+	"gaia-1.1":        "claude-opus-4-7",
+	"gaia-1.0":        "claude-sonnet-4-6",
+	"apollo-2.0":      "kimi-k3",
+	"apollo-1.1":      "kimi-k2.7-code",
+	"apollo-1.0":      "kimi-k2.7-code",
+	"metis-1.2-flash": "glm-5.3-flash",
+	"metis-1.1":       "glm-5.2",
+	"metis-1.0":       "glm-5.1",
+}
+
+// ResolveModel 解析客户端模型名 → 上游模型 ID：
+// 归一化 → 查别名 → 未命中则返回归一化名（未知模型仍交给上游判定）。
 func ResolveModel(name string) string {
-	if up, ok := ModelAlias[name]; ok {
+	n := normalizeModel(name)
+	if up, ok := ModelAlias[n]; ok {
 		return up
 	}
-	return name
+	return n
 }
 
 // PrepareBody 将 OpenAI 请求体转为 Anthropic 请求体；无法解析时原样返回。

@@ -117,21 +117,38 @@ curl -s http://localhost:7864/status \
 
 ### 可用模型
 
-| 客户端名 | 上游模型 |
+`/v1/models` 返回的即为下表模型（与上游公开目录一致），可直接作为 `model` 传入：
+
+| 模型 ID | 上下文 | 说明 |
+|---|---|---|
+| `phanthy-fast` | 1.05M | 日常任务，最经济 |
+| `phanthy-pro` | 1.05M | 较复杂任务 |
+| `phanthy-ultra` | 1.05M | 高难度任务 |
+| `glm-5.3-flash` | 1M | 日常任务 |
+| `glm-5.3` | 1M | 日常任务 |
+| `glm-5.2` | 1M | 日常任务 |
+| `glm-5.1` | 200K | 一般任务 |
+| `kimi-k3` | 1M | 较复杂任务 |
+| `kimi-k2.7-code` | 256K | 日常任务 |
+| `deepseek-v4.1-flash` | 1M | 日常任务 |
+
+**可用性取决于账户套餐**：未开放的模型上游会返回 `403 model_not_allowed`。
+该错误会以 `400 model_not_allowed` 透传给客户端，且**不会**让账号进入冷却（这是请求侧问题，不是账号故障）。
+
+### 名称兼容
+
+模型名会先归一化（去首尾空白、转小写、剥离 `[1m]`/`[2m]`/`:1m` 之类的上下文后缀、内部空白折成 `-`），
+再查别名表。因此下列写法都能正常工作：
+
+| 客户端可用写法 | 实际发往上游 |
 |---|---|
-| DeepSeek-V4 | Iris-1.0 |
-| gpt-5.6-sol | Zeus-1.1-pro |
-| gpt-5.6-terra | Zeus-1.1 |
-| gpt-5.6-luna | Zeus-1.1-fast |
-| gpt-5.5 | Zeus-1.0-pro |
-| Claude Opus 4.8 | Gaia-1.2 |
-| Claude Opus 4.7 | Gaia-1.1 |
-| Claude Sonnet 4.6 | Gaia-1.0 |
-| Kimi K3 | Apollo-2.0 |
-| Kimi-k2.7-code | Apollo-1.1 |
-| Kimi K2.6 | Apollo-1.0 |
-| GLM 5.2 | Metis-1.1 |
-| GLM-5.1 | Metis-1.0 |
+| `Kimi K3`、`Kimi-k3`、`kimi-k3[1m]` | `kimi-k3` |
+| `GLM 5.2`、`glm-5.2` | `glm-5.2` |
+| `DeepSeek-V4` | `deepseek-v4.1-flash` |
+| `Claude Opus 4.8` | `claude-opus-4-8` |
+| `auto` | `phanthy-fast` |
+| `gpt-5.6-sol` | `phanthy-pro` |
+| `Iris-1.0`、`Zeus-1.1-pro`、`Gaia-1.2`、`Apollo-2.0`、`Metis-1.1` | 对应当前公开 ID |
 
 ## API
 

@@ -24,6 +24,7 @@ const (
 	ErrSoftRate                   // 429 软限流 → 短冷却
 	ErrSessionDead                // 401/会话失效 → 禁用
 	ErrNotFound                   // 404 上游偶发 → 短冷却不累计 errCount（防雪崩）
+	ErrModelDenied                // 403 套餐不含该模型 → 账号本身健康，不冷却不计数
 	ErrServer                     // 5xx 上游故障
 	ErrClient                     // 其他 4xx / 业务错误
 )
@@ -38,6 +39,8 @@ func (k ErrKind) String() string {
 		return "session_dead"
 	case ErrNotFound:
 		return "not_found"
+	case ErrModelDenied:
+		return "model_denied"
 	case ErrServer:
 		return "server"
 	case ErrClient:
@@ -66,6 +69,14 @@ var hardMarkers = []string{
 	"积分不足", "额度不足", "余额不足", "积分用完", "额度用尽", "没有积分",
 }
 
+// modelDeniedMarkers 套餐不含该模型的关键词。
+// 上游对未开放模型返回 403 {"error":{"code":"model_not_allowed",...}}；
+// 这是请求侧问题，不是账号问题，不能计入错误阈值触发冷却。
+var modelDeniedMarkers = []string{
+	"model_not_allowed", "model not allowed", "not allowed for this plan",
+	"model not available", "model_not_available",
+}
+
 // sessionDeadMarkers 会话失效关键词。
 var sessionDeadMarkers = []string{
 	"OAuth token has been revoked", "missing_login", "invalid_grant",
@@ -78,6 +89,13 @@ func Classify(status int, body string) ErrKind {
 		return ErrHardCredit
 	}
 	lower := strings.ToLower(body)
+	if status == http.StatusForbidden {
+		for _, m := range modelDeniedMarkers {
+			if strings.Contains(lower, m) {
+				return ErrModelDenied
+			}
+		}
+	}
 	for _, m := range hardMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
 			return ErrHardCredit

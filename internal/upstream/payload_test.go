@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -169,26 +170,94 @@ func TestResolveModel(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"DeepSeek-V4", "Iris-1.0"},
-		{"gpt-5.6-sol", "Zeus-1.1-pro"},
-		{"gpt-5.6-terra", "Zeus-1.1"},
-		{"gpt-5.6-luna", "Zeus-1.1-fast"},
-		{"gpt-5.5", "Zeus-1.0-pro"},
-		{"Claude Opus 4.8", "Gaia-1.2"},
-		{"Claude Opus 4.7", "Gaia-1.1"},
-		{"Claude Sonnet 4.6", "Gaia-1.0"},
-		{"Kimi K3", "Apollo-2.0"},
-		{"Kimi-k2.7-code", "Apollo-1.1"},
-		{"Kimi K2.6", "Apollo-1.0"},
-		{"GLM 5.2", "Metis-1.1"},
-		{"GLM-5.1", "Metis-1.0"},
+		// 规范 ID：原样透传（大小写归一化）。
+		{"kimi-k3", "kimi-k3"},
+		{"Kimi-k3", "kimi-k3"},
+		{"glm-5.2", "glm-5.2"},
+		{"glm-5.3-flash", "glm-5.3-flash"},
+		{"deepseek-v4.1-flash", "deepseek-v4.1-flash"},
+		{"phanthy-pro", "phanthy-pro"},
+
+		// 展示名：内部空白折成连字符后落到规范 ID。
+		{"Kimi K3", "kimi-k3"},
+		{"GLM 5.2", "glm-5.2"},
+		{"  Kimi-k2.7-code  ", "kimi-k2.7-code"},
+
+		// 上下文后缀：上游只认裸模型名，必须剥离。
+		{"kimi-k3[1m]", "kimi-k3"},
+		{"glm-5.2[2m]", "glm-5.2"},
+		{"kimi-k3:1m", "kimi-k3"},
+
+		// Auto：落到最经济的公开档。
+		{"auto", "phanthy-fast"},
+
+		// 历史商业命名 → 当前公开 ID。
+		{"DeepSeek-V4", "deepseek-v4.1-flash"},
+		{"Claude Opus 4.8", "claude-opus-4-8"},
+		{"claude-sonnet-4.6", "claude-sonnet-4-6"},
+		{"gpt-5.6-sol", "phanthy-pro"},
+
+		// 上游内部代号（已不在公开目录）→ 当前公开 ID，避免 403。
+		{"Iris-1.0", "deepseek-v4.1-flash"},
+		{"Zeus-1.1-pro", "phanthy-pro"},
+		{"Gaia-1.2", "claude-opus-4-8"},
+		{"Apollo-2.0", "kimi-k3"},
+		{"Metis-1.1", "glm-5.2"},
+
+		// 未知模型：返回归一化名，交给上游判定。
 		{"unknown-model", "unknown-model"},
+		{"Unknown Model", "unknown-model"},
 		{"", ""},
 	}
 	for _, c := range cases {
 		got := ResolveModel(c.input)
 		if got != c.want {
 			t.Errorf("ResolveModel(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}
+
+// TestCanonicalModelsAreResolvable 保证 /v1/models 里的每个 ID 都能被解析回来，
+// 即别名表不会把某个规范 ID 改写掉，否则列表与实际调用会不一致。
+func TestCanonicalModelsAreResolvable(t *testing.T) {
+	for _, m := range CanonicalModels {
+		if got := ResolveModel(m.ID); got != m.ID {
+			t.Errorf("ResolveModel(%q) = %q, want 规范 ID 不被改写", m.ID, got)
+		}
+	}
+}
+
+// TestModelAliasTargetsAreReal 防止别名表指向已下线的上游代号。
+// 旧版映射把客户端模型翻译成 iris/zeus/gaia/apollo/metis 这类内部代号，
+// 而这些代号已不在上游可调用目录中，导致所有请求吃 403；这里锁死方向。
+func TestModelAliasTargetsAreReal(t *testing.T) {
+	deadPrefixes := []string{"iris-", "zeus-", "gaia-", "apollo-", "metis-"}
+	for from, to := range ModelAlias {
+		for _, prefix := range deadPrefixes {
+			if strings.HasPrefix(to, prefix) {
+				t.Errorf("ModelAlias[%q] = %q 指向已下线的内部代号，会稳定拿到 403", from, to)
+			}
+		}
+		// 键必须是归一化后的形态，否则客户端实际发送的名字查不到。
+		if from != normalizeModel(from) {
+			t.Errorf("ModelAlias 键 %q 未归一化（应为 %q）", from, normalizeModel(from))
+		}
+	}
+}
+
+// TestNormalizeModel 确认归一化与官网客户端的处理顺序一致。
+func TestNormalizeModel(t *testing.T) {
+	cases := map[string]string{
+		"  Kimi-K3  ":     "kimi-k3",
+		"GLM 5.2":         "glm-5.2",
+		"kimi-k3[1m]":     "kimi-k3",
+		"kimi-k3[2M]":     "kimi-k3",
+		"claude-opus-4.8": "claude-opus-4.8",
+		"":                "",
+	}
+	for in, want := range cases {
+		if got := normalizeModel(in); got != want {
+			t.Errorf("normalizeModel(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

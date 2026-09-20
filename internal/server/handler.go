@@ -90,27 +90,28 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 静态模型表（客户端可见的商业命名）。
-var staticModels = []map[string]any{
-	{"id": "DeepSeek-V4", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "gpt-5.6-sol", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "gpt-5.6-terra", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "gpt-5.6-luna", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "gpt-5.5", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "Claude Opus 4.8", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "Claude Opus 4.7", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "Claude Sonnet 4.6", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "Kimi K3", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "Kimi-k2.7-code", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "Kimi K2.6", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "GLM 5.2", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
-	{"id": "GLM-5.1", "object": "model", "created": 1753600000, "owned_by": "phanthy", "context_length": 200000},
+// modelsCreated 是模型列表的固定创建时间（秒），保证响应稳定可缓存。
+const modelsCreated = 1753600000
+
+// modelEntries 由 upstream.CanonicalModels 生成，保证 /v1/models
+// 与真实可调用的上游模型保持一致。
+var modelEntries = buildModelEntries()
+
+func buildModelEntries() []map[string]any {
+	out := make([]map[string]any, 0, len(upstream.CanonicalModels))
+	for _, m := range upstream.CanonicalModels {
+		out = append(out, map[string]any{
+			"id": m.ID, "object": "model", "created": modelsCreated,
+			"owned_by": "phanthy", "context_length": m.Context,
+		})
+	}
+	return out
 }
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
-		"data":   staticModels,
+		"data":   modelEntries,
 	})
 }
 
@@ -187,6 +188,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
 				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
 				continue
+			case upstream.ErrModelDenied:
+				// 403 套餐不含该模型：请求侧问题，账号仍然健康。
+				// 不冷却、不计错误，直接返回客户端，避免把可用账号误伤掉。
+				writeOpenAIError(w, http.StatusBadRequest, "model_not_allowed",
+					"model is not allowed for this plan: "+strings.TrimSpace(string(respBody)))
+				return
 			default:
 				h.cfg.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
