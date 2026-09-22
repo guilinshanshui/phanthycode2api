@@ -13,15 +13,18 @@
 - 🔁 **协议转换** — OpenAI 请求/响应 ↔ Anthropic Messages API 双向转换，流式 SSE 实时透传
 - 🔓 **OAuth 登录** — 半自动 PKCE 授权码流程，一键获取凭证
 - ⏰ **定时 keepalive** — 保持 token 活跃，接近过期时自动刷新
-- 🗺 **模型映射** — 客户端使用商业名（DeepSeek-V4、gpt-5.6-sol 等），自动映射到上游真实模型
+- 🗺 **模型映射** — 模型名统一归一化（大小写、空白、`[1m]` 上下文后缀），历史商业名自动映射到当前公开模型 ID
+- 🛡 **模型不可用不误伤账号** — 套餐未开放的模型返回 `400 model_not_allowed`，不计错误、不触发冷却
 - 🏗 **Go 单二进制** — 无第三方依赖，`go build` 即得
 
 ## 快速开始
 
 ### 1. 构建 & 配置
 
+> 需要 Go 1.26.5+（见 `go.mod`）。更低版本会由默认的 `GOTOOLCHAIN=auto` 自动拉取对应工具链（受限网络下可预置 `GOPROXY`）。
+
 ```bash
-git clone https://github.com/lwjlwjlwjlwj/phanthycode2api.git
+git clone https://github.com/guilinshanshui/phanthycode2api.git
 cd phanthycode2api
 go build -o phanthycode2api ./cmd/server
 cp config.example.json config.json
@@ -31,10 +34,19 @@ cp config.example.json config.json
 ### 2. 登录获取凭证
 
 ```bash
-go run ./cmd/login
+go run ./cmd/login -step=url
+go run ./cmd/login -step=exchange -code=<授权码>
 ```
 
-浏览器打开授权链接 → 登录 PhanthyCode 账号 → 授权后粘贴 code 到终端，凭证自动保存到 `auths/` 目录。
+`cmd/login` 是**两步式**：`-step=url`（默认）生成 PKCE 授权链接并打开浏览器，把 verifier 写入 `.login-verifier` 后即退出；
+浏览器完成授权 → 复制页面显示的 code → 用 `-step=exchange` 交换 token，凭证保存到 `auths/` 目录并删除 verifier。
+
+也可直接用封装好的脚本（自动清洗 code 输入，登录后自动重启容器）：
+
+```bash
+./login.sh           # 交互式：生成 URL → 粘贴 code → 自动交换落盘
+./login.sh -code=xxx # 跳过第一步，直接用已有 code 交换（需先跑过第一步）
+```
 
 ### 3. 启动服务
 
@@ -148,17 +160,19 @@ curl -s http://localhost:7864/status \
 | `Claude Opus 4.8` | `claude-opus-4-8` |
 | `auto` | `phanthy-fast` |
 | `gpt-5.6-sol` | `phanthy-pro` |
-| `Iris-1.0`、`Zeus-1.1-pro`、`Gaia-1.2`、`Apollo-2.0`、`Metis-1.1` | 对应当前公开 ID |
+| `Iris-1.0`、`Zeus-1.1-pro`、`Gaia-1.2`、`Apollo-2.0`、`Metis-1.1` | 上游已下线的旧内部代号，仅作入参兼容，自动转发到对应公开 ID |
 
 ## API
 
 ### `POST /v1/chat/completions`
 
-OpenAI 兼容。支持 `stream`（SSE）、`max_tokens`、`temperature`、`top_p`。
+OpenAI 兼容。支持 `stream`（SSE 流式）、`max_tokens`、`temperature`、`top_p`，以及
+`tools` / `tool_choice`（函数调用，含 `none`/`auto`/`required` 三种字符串形式）与 `stop`。
 
 ### `GET /v1/models`
 
-返回配置的模型列表。
+返回上游当前公开可用的模型列表（与官网定价页一致），含 `context_length`。
+套餐未开放的模型仍会列出，但调用时返回 `400 model_not_allowed`。
 
 ### `GET /status`
 
@@ -202,8 +216,8 @@ docker compose up -d --build
 首次使用仍需在宿主机生成凭证后再挂载：
 
 ```bash
-# 宿主机本地生成凭证（go run ./cmd/login），写入 ./auths
-go run ./cmd/login
+# 宿主机本地生成凭证（两步式 OAuth），写入 ./auths
+./login.sh               # 或手动两步：-step=url 然后 -step=exchange -code=xxx
 # 凭证就绪后再 docker compose up，容器直接复用 ./auths
 ```
 
@@ -255,7 +269,10 @@ phanthycode2api/
 │   ├── server/          # OpenAI 兼容 HTTP 服务器，带轮转与错误分类 + 鉴权中间件
 │   └── scheduler/       # 定时 keepalive 任务
 ├── config.example.json  # 配置模板
+├── login.sh             # 半自动 OAuth 登录脚本（包装 cmd/login 两步流程）
+├── credit.sh            # 账号池状态 / credit 查看
 ├── Dockerfile           # 多阶段构建
+├── Dockerfile.local     # 离线构建（复用预编译 dist/ 二进制，网络受限环境用）
 ├── docker-compose.yml   # 容器编排（含 healthcheck）
 ├── .dockerignore
 ├── .gitignore
