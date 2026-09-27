@@ -37,7 +37,8 @@ dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::ba
   <div class="card">
     <h3>管理员密码</h3>
     <div class="row">
-      <div class="field"><label>新密码</label><input id="newPassword" type="password" placeholder="至少 8 位"></div>
+      <div class="field"><label>新密码</label><input id="newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password"></div>
+      <div class="field"><label>确认新密码</label><input id="confirmPassword" type="password" placeholder="再次输入" autocomplete="new-password"></div>
       <button class="primary" onclick="changePassword()">修改密码</button>
     </div>
     <p id="passwordMsg"></p>
@@ -72,7 +73,7 @@ async function toggleKey(id,enabled){await api('keys/'+id,{method:'PATCH',body:J
 async function deleteKey(id){if(!confirm('确定删除该密钥？'))return;await api('keys/'+id,{method:'DELETE'});loadKeys()}
 async function loadLogs(){const d=await api('logs?limit=200');$('#logRows').innerHTML=d.entries.map(e=>`<tr><td>${dt(e.time)}</td><td>${esc(e.key_name||e.key_id)}</td><td>${esc(e.uid)}</td><td>${esc(e.model)}</td><td class="${e.status>=400?'error':''}">${e.status}</td><td>${e.latency_ms}ms</td><td>${e.prompt_tokens}/${e.completion_tokens}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">暂无日志</td></tr>'}
 async function clearLogs(){if(confirm('确定清空日志？')){await fetch('/admin/api/logs',{method:'DELETE'});loadLogs()}}
-async function changePassword(){const password=$('#newPassword').value;if(password.length<8){$('#passwordMsg').textContent='密码至少 8 位';return}$('#passwordMsg').textContent='提交中...';try{await api('password',{method:'POST',body:JSON.stringify({password})});$('#newPassword').value='';$('#passwordMsg').textContent='已修改，下次登录使用新密码'}catch(e){$('#passwordMsg').textContent=e.message}}
+async function changePassword(){const password=$('#newPassword').value;if(password.length<8){$('#passwordMsg').textContent='密码至少 8 位';return}if(password!==$('#confirmPassword').value){$('#passwordMsg').textContent='两次输入的密码不一致';return}$('#passwordMsg').textContent='提交中...';try{await api('password',{method:'POST',body:JSON.stringify({password})});$('#newPassword').value='';$('#confirmPassword').value='';$('#passwordMsg').textContent='已修改，下次登录使用新密码'}catch(e){$('#passwordMsg').textContent=e.message}}
 async function loadConfig(){const d=await api('config');$('#configText').value=JSON.stringify(d.config,null,2)}
 async function saveConfig(){try{JSON.parse($('#configText').value);await api('config',{method:'PUT',body:$('#configText').value});$('#configMsg').textContent='已保存'}catch(e){$('#configMsg').textContent=e.message}}
 async function boot(){try{await api('me');$('#login').style.display='none';loadDashboard()}catch(e){$('#login').style.display='grid'}}

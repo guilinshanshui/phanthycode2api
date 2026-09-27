@@ -224,6 +224,11 @@ func (c *Config) ToMap() map[string]any {
 	out["hard_credit_duration"] = c.HardCreditDur.String()
 	out["soft_rate_duration"] = c.SoftRateDur.String()
 	out["err_cooldown_duration"] = c.ErrCooldownDur.String()
+	if adminConfig, ok := out["admin"].(map[string]any); ok {
+		if adminConfig["password_hash"] != "" {
+			adminConfig["password_hash"] = "***"
+		}
+	}
 	return out
 }
 
