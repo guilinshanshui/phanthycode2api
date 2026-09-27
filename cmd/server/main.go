@@ -381,10 +381,10 @@ func DeleteAccount(dir string, pool *pool.Pool, uid string) error {
 		if err := os.Remove(path); err != nil {
 			return err
 		}
-		pool.Remove(uid)
-		return nil
 	}
-	return fmt.Errorf("account file not found")
+	// 即使凭证文件已不存在，也要清掉账号池里的残留状态。
+	pool.Remove(uid)
+	return nil
 }
 
 // RefreshAccount 手动刷新指定账号的 OAuth token。
