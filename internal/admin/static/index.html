@@ -44,9 +44,30 @@ dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::ba
     <p id="passwordMsg"></p>
   </div>
   <div class="card">
-    <h3>配置文件</h3>
-    <textarea id="configText"></textarea>
-    <div class="row"><button class="primary" onclick="saveConfig()">保存</button><button onclick="loadConfig()">重新加载</button></div>
+    <h3>基础设置</h3>
+    <div class="grid">
+      <div class="field"><label>监听地址（重启生效）</label><input id="cfgListen" disabled></div>
+      <div class="field"><label>全局 API Key</label><input id="cfgAPIKey"></div>
+      <div class="field"><label>账号目录</label><input id="cfgAuthDir"></div>
+      <div class="field"><label>状态文件</label><input id="cfgStateFile"></div>
+      <div class="field"><label>上游地址</label><input id="cfgBaseURL"></div>
+      <div class="field"><label>上游超时（秒）</label><input id="cfgTimeout" type="number" min="1"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>冷却与调度</h3>
+    <div class="grid">
+      <div class="field"><label>积分不足冷却</label><input id="cfgHardCredit"></div>
+      <div class="field"><label>限流冷却</label><input id="cfgSoftRate"></div>
+      <div class="field"><label>连续错误阈值</label><input id="cfgErrThreshold" type="number" min="1"></div>
+      <div class="field"><label>错误冷却</label><input id="cfgErrCooldown"></div>
+      <div class="field"><label>保活小时（逗号分隔）</label><input id="cfgKeepaliveHours" placeholder="22"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>高级：原始配置文件</h3>
+    <textarea id="configText" style="min-height:220px"></textarea>
+    <div class="row"><button class="primary" onclick="saveConfig()">保存配置</button><button onclick="loadConfig()">重新加载</button><button onclick="saveRawConfig()">保存原始 JSON</button></div>
     <p id="configMsg"></p>
   </div>
 </section>
@@ -74,8 +95,11 @@ async function deleteKey(id){if(!confirm('确定删除该密钥？'))return;awai
 async function loadLogs(){const d=await api('logs?limit=200');$('#logRows').innerHTML=d.entries.map(e=>`<tr><td>${dt(e.time)}</td><td>${esc(e.key_name||e.key_id)}</td><td>${esc(e.uid)}</td><td>${esc(e.model)}</td><td class="${e.status>=400?'error':''}">${e.status}</td><td>${e.latency_ms}ms</td><td>${e.prompt_tokens}/${e.completion_tokens}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">暂无日志</td></tr>'}
 async function clearLogs(){if(confirm('确定清空日志？')){await fetch('/admin/api/logs',{method:'DELETE'});loadLogs()}}
 async function changePassword(){const password=$('#newPassword').value;if(password.length<8){$('#passwordMsg').textContent='密码至少 8 位';return}if(password!==$('#confirmPassword').value){$('#passwordMsg').textContent='两次输入的密码不一致';return}$('#passwordMsg').textContent='提交中...';try{await api('password',{method:'POST',body:JSON.stringify({password})});$('#newPassword').value='';$('#confirmPassword').value='';$('#passwordMsg').textContent='已修改，下次登录使用新密码'}catch(e){$('#passwordMsg').textContent=e.message}}
-async function loadConfig(){const d=await api('config');$('#configText').value=JSON.stringify(d.config,null,2)}
-async function saveConfig(){try{JSON.parse($('#configText').value);await api('config',{method:'PUT',body:$('#configText').value});$('#configMsg').textContent='已保存'}catch(e){$('#configMsg').textContent=e.message}}
+function splitHours(value){return String(value||'').split(/[,\s]+/).map(x=>parseInt(x,10)).filter(x=>!isNaN(x))}
+async function loadConfig(){const d=await api('config');const c=d.config;$('#cfgListen').value=c.listen||'';$('#cfgAPIKey').value=c.api_key||'';$('#cfgAuthDir').value=c.auth_dir||'';$('#cfgStateFile').value=c.state_file||'';$('#cfgBaseURL').value=c.base_url||'';$('#cfgTimeout').value=c.upstream?.timeout_seconds||120;$('#cfgHardCredit').value=c.cooldown?.hard_credit||'';$('#cfgSoftRate').value=c.cooldown?.soft_rate||'';$('#cfgErrThreshold').value=c.cooldown?.err_threshold||3;$('#cfgErrCooldown').value=c.cooldown?.err_cooldown||'';$('#cfgKeepaliveHours').value=(c.schedule?.keepalive_hours||[]).join(',');$('#configText').value=JSON.stringify(c,null,2)}
+function graphicalConfig(){return {api_key:$('#cfgAPIKey').value,auth_dir:$('#cfgAuthDir').value.trim(),state_file:$('#cfgStateFile').value.trim(),base_url:$('#cfgBaseURL').value.trim(),cooldown:{hard_credit:$('#cfgHardCredit').value.trim(),soft_rate:$('#cfgSoftRate').value.trim(),err_threshold:+$('#cfgErrThreshold').value||3,err_cooldown:$('#cfgErrCooldown').value.trim()},schedule:{keepalive_hours:splitHours($('#cfgKeepaliveHours').value)},upstream:{timeout_seconds:+$('#cfgTimeout').value||120}}}
+async function saveConfig(){$('#configMsg').textContent='保存中...';try{await api('config',{method:'PUT',body:JSON.stringify(graphicalConfig())});$('#configMsg').textContent='已保存，重启后生效';loadConfig()}catch(e){$('#configMsg').textContent=e.message}}
+async function saveRawConfig(){try{const raw=JSON.parse($('#configText').value);await api('config',{method:'PUT',body:JSON.stringify(raw)});$('#configMsg').textContent='已保存，重启后生效';loadConfig()}catch(e){$('#configMsg').textContent=e.message}}
 async function boot(){try{await api('me');$('#login').style.display='none';loadDashboard()}catch(e){$('#login').style.display='grid'}}
 $('#password').addEventListener('keydown',e=>{if(e.key==='Enter')login()});boot()
 </script></body></html>

@@ -232,14 +232,27 @@ func (c *Config) ToMap() map[string]any {
 	return out
 }
 
-// SaveConfigMap 保存设置页提交的 JSON，并禁止修改监听地址与管理员密码。
+// SaveConfigMap 保存设置页提交的配置；listen 与 admin 保留原值，避免网页误改。
 func SaveConfigMap(path string, raw map[string]any) error {
-	delete(raw, "listen")
-	delete(raw, "admin")
-	delete(raw, "hard_credit_duration")
-	delete(raw, "soft_rate_duration")
-	delete(raw, "err_cooldown_duration")
-	encoded, err := json.MarshalIndent(raw, "", "  ")
+	existing := map[string]any{}
+	if current, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(current, &existing)
+	}
+	out := map[string]any{}
+	for key, value := range raw {
+		switch key {
+		case "listen", "admin", "hard_credit_duration", "soft_rate_duration", "err_cooldown_duration":
+			continue
+		}
+		out[key] = value
+	}
+	if listen, ok := existing["listen"]; ok {
+		out["listen"] = listen
+	}
+	if adminConfig, ok := existing["admin"]; ok {
+		out["admin"] = adminConfig
+	}
+	encoded, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
