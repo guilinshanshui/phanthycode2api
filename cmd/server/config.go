@@ -20,7 +20,7 @@ type Config struct {
 
 	Admin struct {
 		Enabled      bool   `json:"enabled"`
-		PasswordHash string `json:"password_hash"`
+		PasswordHash string `json:"password_hash"` // 空时使用内置默认密码 admin123
 		DataDir      string `json:"data_dir"`
 	} `json:"admin"`
 

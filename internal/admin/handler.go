@@ -13,11 +13,12 @@ import (
 
 // AccountManager 账号操作回调，由 server 注入，避免 admin 直接依赖 pool/upstream。
 type AccountManager struct {
-	List      func() []map[string]any
-	Add       func(req map[string]any) error
-	Delete    func(uid string) error
-	Refresh   func(uid string) error
-	Keepalive func(uid string) error
+	StartOAuth func() (map[string]any, error)
+	List       func() []map[string]any
+	Add        func(req map[string]any) error
+	Delete     func(uid string) error
+	Refresh    func(uid string) error
+	Keepalive  func(uid string) error
 }
 
 // Handler 承载 /admin 页面与 /admin/api/* 接口。
@@ -200,6 +201,15 @@ func (h *Handler) accounts(w http.ResponseWriter, r *http.Request, tail []string
 	}
 	if len(tail) == 0 {
 		if r.Method == http.MethodGet {
+			if r.URL.Query().Get("action") == "oauth-url" {
+				data, err := h.Accounts.StartOAuth()
+				if err != nil {
+					writeAdminJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+					return
+				}
+				writeAdminJSON(w, http.StatusOK, data)
+				return
+			}
 			writeAdminJSON(w, http.StatusOK, map[string]any{"accounts": h.Accounts.List()})
 			return
 		}

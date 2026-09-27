@@ -3,6 +3,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -85,20 +89,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("load admin data: %v", err)
 	}
-	if cfg.Admin.Enabled && cfg.Admin.PasswordHash == "" {
-		log.Print("admin.enabled=true but admin.password_hash is empty; /admin disabled")
-	}
 	var adminHandler *admin.Handler
-	if cfg.Admin.Enabled && cfg.Admin.PasswordHash != "" {
+	if cfg.Admin.Enabled {
 		adminStore.SetConfigState(admin.ConfigState{
 			GetConfig:  func() map[string]any { return cfg.ToMap() },
 			SaveConfig: func(raw map[string]any) error { return SaveConfigMap(*cfgPath, raw) },
 		})
 		adminHandler = admin.NewHandler(adminStore,
-			func() bool { return cfg.Admin.PasswordHash != "" },
-			func(password string) bool { return admin.VerifyPassword(password, cfg.Admin.PasswordHash) },
+			func() bool { return true },
+			func(password string) bool {
+				if cfg.Admin.PasswordHash == "" {
+					return subtle.ConstantTimeCompare([]byte(password), []byte(defaultAdminPassword)) == 1
+				}
+				return admin.VerifyPassword(password, cfg.Admin.PasswordHash)
+			},
 		)
 		adminHandler.Accounts = &admin.AccountManager{
+			StartOAuth: func() (map[string]any, error) { return StartOAuthLogin(cfg.BaseURL, cfg.AuthDir) },
 			List: func() []map[string]any {
 				out := []map[string]any{}
 				for _, status := range p.List() {
@@ -154,6 +161,8 @@ func main() {
 	}
 	log.Printf("bye")
 }
+
+const defaultAdminPassword = "admin123"
 
 // EnsureDefaultConfig 在可执行文件目录创建开箱即用的 config.json。
 func EnsureDefaultConfig(path, baseDir string) (string, error) {
@@ -239,6 +248,33 @@ func SaveConfigMap(path string, raw map[string]any) error {
 	return os.Rename(tmp, path)
 }
 
+// StartOAuthLogin 生成 PKCE verifier 和授权链接；verifier 暂存到账号目录内，等待 code 提交。
+func StartOAuthLogin(baseURL, authDir string) (map[string]any, error) {
+	verifier, err := randomPKCEVerifier()
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	values := url.Values{}
+	values.Set("client_id", "phanthy-code-cli")
+	values.Set("response_type", "code")
+	values.Set("redirect_uri", "https://code.phanthy.com/oauth/code/success")
+	values.Set("scope", "user:inference user:profile user:sessions:claude_code")
+	values.Set("code_challenge", challenge)
+	values.Set("code_challenge_method", "S256")
+	values.Set("state", "p2a-admin-login")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(authDir, ".admin-login-verifier"), []byte(verifier), 0o600); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"url": strings.TrimRight(baseURL, "/") + "/oauth/authorize?" + values.Encode(),
+	}, nil
+}
+
 // ExchangeAndSaveAccount 用授权码换取 token 并写入账号目录。
 func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier string) error {
 	code := extractCode(rawCode)
@@ -247,7 +283,7 @@ func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier s
 	}
 	verifier := strings.TrimSpace(rawVerifier)
 	if verifier == "" {
-		raw, err := os.ReadFile(".login-verifier")
+		raw, err := os.ReadFile(filepath.Join(dir, ".admin-login-verifier"))
 		if err != nil {
 			return fmt.Errorf("read verifier: %w", err)
 		}
@@ -362,6 +398,14 @@ func saveAuth(dir string, account *auth.Auth) error {
 }
 
 // extractCode 提取完整回调 URL 或裸授权码中的纯 code。
+// randomPKCEVerifier 生成浏览器授权流程使用的 verifier。
+func randomPKCEVerifier() (string, error) {
+	buf := make([]byte, 48)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
 func extractCode(input string) string {
 	input = strings.TrimSpace(input)
 	if parsed, err := url.Parse(input); err == nil && parsed.Query().Get("code") != "" {

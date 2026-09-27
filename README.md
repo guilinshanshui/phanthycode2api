@@ -19,107 +19,89 @@
 
 ## 快速开始
 
-### 1. 构建 & 配置
+### 方式一：下载 Release（推荐）
 
-> 需要 Go 1.26.5+（见 `go.mod`）。更低版本会由默认的 `GOTOOLCHAIN=auto` 自动拉取对应工具链（受限网络下可预置 `GOPROXY`）。
+1. 打开 [Releases](https://github.com/guilinshanshui/phanthycode2api/releases)。
+2. 下载你的系统压缩包：
+   - Windows：`phanthycode2api-windows-amd64.zip`
+   - Linux：`phanthycode2api-linux-amd64.tar.gz`
+   - macOS Intel：`phanthycode2api-darwin-amd64.tar.gz`
+   - macOS Apple Silicon：`phanthycode2api-darwin-arm64.tar.gz`
+3. 解压到任意目录。
+4. 双击 `phanthycode2api.exe`（Windows），或运行 `./phanthycode2api`。
+5. 浏览器打开管理页：
+
+   ```text
+   http://127.0.0.1:7864/admin
+   ```
+
+6. 使用默认密码 `admin123` 登录。
+7. 在 **账号 → 添加账号** 里点击 **生成授权链接 → 打开链接**，登录后复制 `code`，粘贴回页面提交。
+
+首次启动会自动生成：
+
+- `config.json`
+- `auths/`
+- `data/`
+
+程序会固定读写自己所在目录下的这些文件，所以可以放心双击运行。
+
+### 方式二：源码构建
+
+> 需要 Go 1.26.5+。
 
 ```bash
 git clone https://github.com/guilinshanshui/phanthycode2api.git
 cd phanthycode2api
 go build -o phanthycode2api ./cmd/server
-cp config.example.json config.json
-# 编辑 config.json，设置 api_key（可留空 = 不鉴权）
+./phanthycode2api
 ```
 
-### 2. 登录获取凭证
+命令行登录仍然可用：
 
 ```bash
 go run ./cmd/login -step=url
 go run ./cmd/login -step=exchange -code=<授权码>
 ```
 
-`cmd/login` 是**两步式**：`-step=url`（默认）生成 PKCE 授权链接并打开浏览器，把 verifier 写入 `.login-verifier` 后即退出；
-浏览器完成授权 → 复制页面显示的 code → 用 `-step=exchange` 交换 token，凭证保存到 `auths/` 目录并删除 verifier。
+服务默认监听 `:7864`，可用 `P2A_LISTEN` 环境变量或 `config.json` 覆盖。
 
-也可直接用封装好的脚本（自动清洗 code 输入，登录后自动重启容器）：
-
-```bash
-./login.sh           # 交互式：生成 URL → 粘贴 code → 自动交换落盘
-./login.sh -code=xxx # 跳过第一步，直接用已有 code 交换（需先跑过第一步）
-```
-
-### 3. 启动服务
+### 验证
 
 ```bash
-./phanthycode2api -config config.json
-```
-
-或直接用环境变量（无需配置文件）：
-
-```bash
-P2A_LISTEN=:7864 P2A_API_KEY=your-secret-key ./phanthycode2api
-```
-
-默认监听 `:7864`，可通过 `P2A_LISTEN` 环境变量覆盖。
-
-### 4. 验证
-
-```bash
-# 健康检查（无需鉴权）
 curl -s http://localhost:7864/healthz
-
-# 模型列表
-curl -s http://localhost:7864/v1/models \
-  -H "Authorization: Bearer your-secret-key"
-
-# 聊天（非流式）
-curl -s http://localhost:7864/v1/chat/completions \
-  -H "Authorization: Bearer your-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"DeepSeek-V4","messages":[{"role":"user","content":"你好"}]}'
-
-# 聊天（流式）
-curl -N http://localhost:7864/v1/chat/completions \
-  -H "Authorization: Bearer your-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"DeepSeek-V4","stream":true,"messages":[{"role":"user","content":"数到3"}]}'
-
-# 账号池状态
-curl -s http://localhost:7864/status \
-  -H "Authorization: Bearer your-secret-key"
 ```
 
 ## Web 管理界面
 
-当 `admin.enabled=true` 且已配置 `admin.password_hash` 时，浏览器打开：
+浏览器打开：
 
 ```text
 http://127.0.0.1:7864/admin
 ```
 
-功能包括：账号管理（添加 / 删除 / 手动刷新 / 手动 keepalive）、分发密钥、请求日志与统计、
-以及 `config.json` 在线编辑（监听地址与管理员配置除外）。
-
-首次启用先生成 PBKDF2 密码哈希：
+默认密码为 `admin123`。首次登录后请在 `config.json` 中设置强密码：
 
 ```bash
-go run ./cmd/hash-password -password=your-password
+go run ./cmd/hash-password -password=你的强密码
 ```
 
-把命令输出的 `salt:hash` 写入 `config.json`：
+把输出写入：
 
 ```json
-{
-  "admin": {
-    "enabled": true,
-    "password_hash": "<命令输出的完整哈希>",
-    "data_dir": "./data/admin"
-  }
+"admin": {
+  "enabled": true,
+  "password_hash": "<PBKDF2 哈希>",
+  "data_dir": "./data/admin"
 }
 ```
 
-管理密码、分发密钥哈希与请求日志保存在 `data/admin/`，同样不要提交到仓库。
-`/admin` 的登录会话与 `/v1` API 密钥彼此独立；创建的分发密钥可代替主 `api_key` 调用 `/v1` 接口。
+管理页支持：
+
+- 账号管理：生成 OAuth 授权链接、提交授权码、删除账号、手动刷新和保活
+- 密钥分发：每个下游独立密钥、独立次数上限、模型白名单
+- 请求日志与统计
+- `config.json` 在线编辑（监听地址和管理员配置除外）
 
 ## 配置说明
 
@@ -141,7 +123,7 @@ go run ./cmd/hash-password -password=your-password
   },
   "upstream": {
     "timeout_seconds": 120
-  }
+  },
   "admin": {
     "enabled": true,
     "password_hash": "***",
@@ -163,8 +145,8 @@ go run ./cmd/hash-password -password=your-password
 | `cooldown.err_cooldown` | `P2A_ERR_COOLDOWN` | `10m` | 错误冷却时长 |
 | `schedule.keepalive_hours` | — | `[22]` | 定时 keepalive 小时 |
 | `upstream.timeout_seconds` | `P2A_TIMEOUT_SECONDS` | `120` | 上游请求超时 |
-| `admin.enabled` | — | `false` | 是否启用 `/admin` Web 管理界面 |
-| `admin.password_hash` | — | `""` | PBKDF2 管理密码哈希，空则禁用 `/admin` |
+| `admin.enabled` | — | `true` | 是否启用 `/admin` Web 管理界面 |
+| `admin.password_hash` | — | `""` | PBKDF2 管理密码哈希，空则使用默认密码 `admin123` |
 | `admin.data_dir` | — | `./data/admin` | 管理数据目录 |
 
 ### 可用模型
