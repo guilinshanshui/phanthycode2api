@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,15 +30,35 @@ func main() {
 	cfgPath := flag.String("config", "config.json", "path to config json")
 	flag.Parse()
 
+	baseDir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		log.Fatalf("resolve app directory: %v", err)
+	}
+	if !filepath.IsAbs(*cfgPath) {
+		candidate := filepath.Join(baseDir, *cfgPath)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			*cfgPath = candidate
+		} else if _, cwdStatErr := os.Stat(*cfgPath); cwdStatErr != nil {
+			*cfgPath = candidate
+		}
+	}
+
 	cfg, err := Load(*cfgPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("config %s not found, using defaults+env", *cfgPath)
-			cfg, err = Load("")
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("config %s not found; create default config and run from app directory", *cfgPath)
+			cfgPath, cfgErr := EnsureDefaultConfig(*cfgPath, baseDir)
+			if cfgErr != nil {
+				log.Fatalf("create default config: %v", cfgErr)
+			}
+			cfg, err = Load(cfgPath)
 		}
 		if err != nil {
 			log.Fatalf("load config: %v", err)
 		}
+	}
+	if err := MakeRelativePathsAbsolute(cfg, baseDir); err != nil {
+		log.Fatalf("resolve config paths: %v", err)
 	}
 
 	auths, err := auth.LoadDir(cfg.AuthDir)
@@ -132,6 +153,60 @@ func main() {
 		log.Fatalf("http: %v", err)
 	}
 	log.Printf("bye")
+}
+
+// EnsureDefaultConfig 在可执行文件目录创建开箱即用的 config.json。
+func EnsureDefaultConfig(path, baseDir string) (string, error) {
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", err
+	}
+	cfg := Default()
+	if err := MakeRelativePathsAbsolute(cfg, baseDir); err != nil {
+		return "", err
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	raw = append(raw, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// MakeRelativePathsAbsolute 让双击运行时始终读写 exe 旁边的 auths/ 与 data/。
+func MakeRelativePathsAbsolute(cfg *Config, baseDir string) error {
+	resolve := func(value string) (string, error) {
+		if value == "" || filepath.IsAbs(value) {
+			return value, nil
+		}
+		return filepath.Abs(filepath.Join(baseDir, value))
+	}
+	var err error
+	if cfg.AuthDir, err = resolve(cfg.AuthDir); err != nil {
+		return err
+	}
+	if cfg.StateFile, err = resolve(cfg.StateFile); err != nil {
+		return err
+	}
+	if cfg.Admin.DataDir, err = resolve(cfg.Admin.DataDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(cfg.AuthDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.StateFile), 0o755); err != nil {
+		return err
+	}
+	return os.MkdirAll(cfg.Admin.DataDir, 0o755)
 }
 
 // ToMap 导出当前配置，供管理端设置页展示。

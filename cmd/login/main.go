@@ -2,8 +2,9 @@
 // 获取 code → 交换 token + 获取 api_key → 落盘 auths/ 即生效。
 //
 // 两步模式：
-//   step=url（默认）：生成授权 URL，打开浏览器，打印 verifier，退出
-//   step=exchange -code=xxx：用 verifier 交换 token，获取 api_key，落盘
+//
+//	step=url（默认）：生成授权 URL，打开浏览器，打印 verifier，退出
+//	step=exchange -code=xxx：用 verifier 交换 token，获取 api_key，落盘
 package main
 
 import (
@@ -24,14 +25,23 @@ import (
 
 var (
 	baseURL  = flag.String("base-url", "https://code.phanthy.com", "Phanthy base URL")
-	outDir   = flag.String("out", "auths", "output directory for auth files")
+	outDir   = flag.String("out", exeDir("auths"), "output directory for auth files")
 	clientID = flag.String("client-id", "phanthy-code-cli", "OAuth client id")
 	step     = flag.String("step", "url", "step: url or exchange")
 	code     = flag.String("code", "", "authorization code (for step=exchange)")
 	verifier = flag.String("verifier", "", "PKCE verifier from step=url output")
 )
 
-const verifierFile = ".login-verifier"
+var verifierFile = exeDir(".login-verifier")
+
+// exeDir 把默认输入/输出路径固定到可执行文件目录，避免双击或换目录运行时找不到文件。
+func exeDir(name string) string {
+	dir, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	return filepath.Join(filepath.Dir(dir), name)
+}
 
 func main() {
 	flag.Parse()

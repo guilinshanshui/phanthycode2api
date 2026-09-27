@@ -100,17 +100,24 @@ type LogEntry struct {
 
 // New 构建管理存储并加载已有数据。
 func New(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
+	if dataDir == "" {
+		dataDir = "./data/admin"
 	}
-	s := &Store{Dir: dataDir, legacyUnauthenticated: true}
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", abs, err)
+	}
+	s := &Store{Dir: abs, legacyUnauthenticated: true}
 	if err := s.loadKeys(); err != nil {
 		return nil, err
 	}
 	if err := s.loadLogs(); err != nil {
 		return nil, err
 	}
-	secret, err := loadOrCreateSecret(dataDir)
+	secret, err := loadOrCreateSecret(abs)
 	if err != nil {
 		return nil, err
 	}
