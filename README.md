@@ -89,6 +89,38 @@ curl -s http://localhost:7864/status \
   -H "Authorization: Bearer your-secret-key"
 ```
 
+## Web 管理界面
+
+当 `admin.enabled=true` 且已配置 `admin.password_hash` 时，浏览器打开：
+
+```text
+http://127.0.0.1:7864/admin
+```
+
+功能包括：账号管理（添加 / 删除 / 手动刷新 / 手动 keepalive）、分发密钥、请求日志与统计、
+以及 `config.json` 在线编辑（监听地址与管理员配置除外）。
+
+首次启用先生成 PBKDF2 密码哈希：
+
+```bash
+go run ./cmd/hash-password -password=your-password
+```
+
+把命令输出的 `salt:hash` 写入 `config.json`：
+
+```json
+{
+  "admin": {
+    "enabled": true,
+    "password_hash": "<命令输出的完整哈希>",
+    "data_dir": "./data/admin"
+  }
+}
+```
+
+管理密码、分发密钥哈希与请求日志保存在 `data/admin/`，同样不要提交到仓库。
+`/admin` 的登录会话与 `/v1` API 密钥彼此独立；创建的分发密钥可代替主 `api_key` 调用 `/v1` 接口。
+
 ## 配置说明
 
 ```json
@@ -110,6 +142,11 @@ curl -s http://localhost:7864/status \
   "upstream": {
     "timeout_seconds": 120
   }
+  "admin": {
+    "enabled": true,
+    "password_hash": "***",
+    "data_dir": "./data/admin"
+  }
 }
 ```
 
@@ -126,6 +163,9 @@ curl -s http://localhost:7864/status \
 | `cooldown.err_cooldown` | `P2A_ERR_COOLDOWN` | `10m` | 错误冷却时长 |
 | `schedule.keepalive_hours` | — | `[22]` | 定时 keepalive 小时 |
 | `upstream.timeout_seconds` | `P2A_TIMEOUT_SECONDS` | `120` | 上游请求超时 |
+| `admin.enabled` | — | `false` | 是否启用 `/admin` Web 管理界面 |
+| `admin.password_hash` | — | `""` | PBKDF2 管理密码哈希，空则禁用 `/admin` |
+| `admin.data_dir` | — | `./data/admin` | 管理数据目录 |
 
 ### 可用模型
 

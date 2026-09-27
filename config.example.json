@@ -15,5 +15,10 @@
   },
   "upstream": {
     "timeout_seconds": 120
+  },
+  "admin": {
+    "enabled": false,
+    "password_hash": "",
+    "data_dir": "./data/admin"
   }
 }

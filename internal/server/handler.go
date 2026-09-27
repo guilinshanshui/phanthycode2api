@@ -2,15 +2,18 @@
 package server
 
 import (
+	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
+	"phanthycode2api/internal/admin"
 	"phanthycode2api/internal/pool"
 	"phanthycode2api/internal/upstream"
 )
@@ -19,13 +22,14 @@ import (
 type Config struct {
 	Pool         *pool.Pool
 	Upstream     *upstream.Client
-	APIKey       string        // 空 = 不鉴权
-	MaxRotate    int           // 单请求最多换号次数，默认 3
-	HardCooldown time.Duration // 积分不足冷却，默认 12h
-	SoftCooldown time.Duration // 429 冷却，默认 60s
-	ErrThreshold int           // 连续其他错误冷却阈值，默认 3
-	ErrCooldown  time.Duration // 错误冷却时长，默认 10m
-	RefreshSkew  time.Duration // token 提前刷新窗口，默认 10m
+	APIKey       string         // 空 = 不鉴权
+	MaxRotate    int            // 单请求最多换号次数，默认 3
+	HardCooldown time.Duration  // 积分不足冷却，默认 12h
+	SoftCooldown time.Duration  // 429 冷却，默认 60s
+	ErrThreshold int            // 连续其他错误冷却阈值，默认 3
+	ErrCooldown  time.Duration  // 错误冷却时长，默认 10m
+	Admin        *admin.Handler // 可空；非空时启用 /admin 与分发密钥
+	RefreshSkew  time.Duration  // token 提前刷新窗口，默认 10m
 }
 
 // Handler 主路由。
@@ -63,19 +67,40 @@ func NewHandler(cfg Config) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.Admin != nil && (r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/")) {
+		h.cfg.Admin.ServeHTTP(w, r)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.APIKey != "" {
-			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != h.cfg.APIKey {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+		plain := ""
+		authz := r.Header.Get("Authorization")
+		if strings.HasPrefix(authz, "Bearer ") {
+			plain = strings.TrimPrefix(authz, "Bearer ")
+		}
+		model := peekModel(r)
+		if h.cfg.APIKey == "" && h.cfg.Admin == nil {
+			next(w, r)
+			return
+		}
+		if h.cfg.Admin != nil {
+			if _, ok := h.cfg.Admin.LookupKey(plain, model); ok {
+				next(w, r)
 				return
 			}
 		}
-		next(w, r)
+		if h.cfg.APIKey != "" && subtle.ConstantTimeCompare([]byte(plain), []byte(h.cfg.APIKey)) == 1 {
+			next(w, r)
+			return
+		}
+		if h.cfg.APIKey == "" && (h.cfg.Admin == nil || h.cfg.Admin.LegacyUnauthenticated()) {
+			next(w, r)
+			return
+		}
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 	}
 }
 
@@ -245,5 +270,25 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 	})
 }
 
-// Ensure imports are used (sync/pool are used via Config).
-var _ = sync.Mutex{}
+func peekModel(r *http.Request) string {
+	if r == nil || r.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var payload struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	return payload.Model
+}
+
+func remoteIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}

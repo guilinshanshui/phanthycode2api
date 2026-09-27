@@ -18,11 +18,17 @@ type Config struct {
 	StateFile string `json:"state_file"` // ./data/state.json
 	BaseURL   string `json:"base_url"`   // https://code.phanthy.com
 
+	Admin struct {
+		Enabled      bool   `json:"enabled"`
+		PasswordHash string `json:"password_hash"`
+		DataDir      string `json:"data_dir"`
+	} `json:"admin"`
+
 	Cooldown struct {
-		HardCredit  string `json:"hard_credit"`  // "12h"
-		SoftRate    string `json:"soft_rate"`    // "60s"
+		HardCredit  string `json:"hard_credit"`   // "12h"
+		SoftRate    string `json:"soft_rate"`     // "60s"
 		ErrThresh   int    `json:"err_threshold"` // 默认 3
-		ErrCooldown string `json:"err_cooldown"` // "10m"
+		ErrCooldown string `json:"err_cooldown"`  // "10m"
 	} `json:"cooldown"`
 
 	Schedule struct {
@@ -48,6 +54,7 @@ func Default() *Config {
 		StateFile: "./data/state.json",
 		BaseURL:   "https://code.phanthy.com",
 	}
+	c.Admin.DataDir = "./data/admin"
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
 	c.Cooldown.ErrThresh = 3
@@ -129,6 +136,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
+	}
+	if c.Admin.DataDir == "" {
+		c.Admin.DataDir = "./data/admin"
 	}
 	if c.BaseURL == "" {
 		c.BaseURL = "https://code.phanthy.com"

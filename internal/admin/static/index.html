@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PhanthyCode2API 管理</title>
+<style>
+:root{--bg:#f3f5f8;--card:#fff;--text:#182230;--muted:#667085;--line:#dfe4ea;--brand:#2563eb;--danger:#dc2626;--ok:#16a34a}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+header{position:sticky;top:0;display:flex;align-items:center;gap:18px;height:56px;padding:0 20px;background:#fff;border-bottom:1px solid var(--line)}
+.brand{font-weight:700}.brand small{color:var(--muted);font-weight:500;margin-left:8px}
+nav{display:flex;gap:6px;overflow:auto}.nav-btn{border:0;background:transparent;padding:8px 12px;border-radius:8px;cursor:pointer;color:var(--muted)}.nav-btn.active{background:#e8f0ff;color:var(--brand);font-weight:600}
+main{max-width:1200px;margin:20px auto;padding:0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.stat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px}.stat b{display:block;font-size:24px}
+h2{margin:0 0 12px;font-size:18px}h3{margin:0 0 8px;font-size:15px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.field{display:flex;flex-direction:column;gap:5px}.field label{font-size:12px;color:var(--muted)}
+input,textarea,select{border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;background:#fff}textarea{min-height:320px;font-family:ui-monospace,Consolas,monospace}
+button,.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 12px;cursor:pointer}.primary{background:var(--brand);border-color:var(--brand);color:#fff}.danger{color:var(--danger)}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600;font-size:12px}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#eef2f6}.on{color:#166534;background:#dcfce7}.off{color:#991b1b;background:#fee2e2}
+.muted{color:var(--muted)}.error{color:var(--danger)}.mono{font-family:ui-monospace,Consolas,monospace}
+#login{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:10}.login-card{width:min(420px,92vw);background:#fff;padding:24px;border-radius:14px;border:1px solid var(--line)}
+dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::backdrop{background:#0006}.bar{height:10px;background:#eef2f6;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--brand)}
+@media(max-width:720px){header{flex-wrap:wrap;height:auto;padding:10px}nav{width:100%}table{display:block;overflow:auto}}
+</style>
+</head>
+<body>
+<div id="login"><div class="login-card"><h2>管理登录</h2><div class="field"><label>管理员密码</label><input id="password" type="password"></div><button class="primary" onclick="login()">登录</button><p id="loginMsg" class="error"></p></div></div>
+<header><div class="brand">PhanthyCode2API<small>管理控制台</small></div><nav><button class="nav-btn active" data-view="dashboard">总览</button><button class="nav-btn" data-view="accounts">账号</button><button class="nav-btn" data-view="keys">密钥</button><button class="nav-btn" data-view="logs">日志</button><button class="nav-btn" data-view="config">设置</button><button onclick="logout()">退出</button></nav></header>
+<main>
+<section id="dashboard"><div class="grid"><div class="stat">账号<b id="stAccounts">-</b></div><div class="stat">分发密钥<b id="stKeys">-</b></div><div class="stat">总请求<b id="stTotal">-</b></div><div class="stat">错误<b id="stErrors">-</b></div></div><div class="card"><h3>最近 30 天请求</h3><div id="chart"></div></div><div class="card"><h3>按密钥统计</h3><table><thead><tr><th>密钥</th><th>请求</th></tr></thead><tbody id="byKey"></tbody></table></div></section>
+<section id="accounts" hidden><div class="card"><div class="row"><button class="primary" onclick="showAccountForm()">添加账号</button><button onclick="loadAccounts()">刷新</button></div><table><thead><tr><th>账号</th><th>状态</th><th>Token</th><th>操作</th></tr></thead><tbody id="accountRows"></tbody></table></div></section>
+<section id="keys" hidden><div class="card"><div class="row"><div class="field"><label>名称</label><input id="keyName" value="默认密钥"></div><div class="field"><label>次数上限（0 无限）</label><input id="keyMax" type="number" value="0"></div><button class="primary" onclick="createKey()">创建</button><button onclick="loadKeys()">刷新</button></div><p id="newKeyMsg"></p><table><thead><tr><th>名称</th><th>密钥</th><th>配额</th><th>状态</th><th>操作</th></tr></thead><tbody id="keyRows"></tbody></table></div></section>
+<section id="logs" hidden><div class="card"><div class="row"><button onclick="loadLogs()">刷新</button><button class="danger" onclick="clearLogs()">清空日志</button></div><table><thead><tr><th>时间</th><th>密钥</th><th>账号</th><th>模型</th><th>状态</th><th>耗时</th><th>Tokens</th></tr></thead><tbody id="logRows"></tbody></table></div></section>
+<section id="config" hidden><div class="card"><textarea id="configText"></textarea><div class="row"><button class="primary" onclick="saveConfig()">保存</button><button onclick="loadConfig()">重新加载</button></div><p id="configMsg"></p></div></section>
+</main>
+<dialog id="accountDialog"><h3>通过授权码添加账号</h3><p class="muted">先运行 <code>go run ./cmd/login -step=url</code>，完成浏览器授权后，把成功页面中的完整 code 值粘贴到下面。如填写 verifier，会忽略本地 <code>.login-verifier</code>。</p><div class="field"><label>Authorization code</label><textarea id="authCode" rows="4"></textarea></div><div class="field"><label>PKCE verifier（可选）</label><input id="authVerifier"></div><div class="row"><button class="primary" onclick="addAccount()">添加</button><button onclick="document.getElementById('accountDialog').close()">取消</button></div><p id="accountMsg"></p></dialog>
+<script>
+const $=s=>document.querySelector(s);let state={keys:[],accounts:[]};
+async function api(path,opts={}){const r=await fetch('/admin/api/'+path,{headers:{'Content-Type':'application/json'},credentials:'same-origin',...opts});if(r.status===401){$('#login').style.display='grid';throw new Error('unauthorized')}const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||r.statusText);return data}
+async function login(){try{await api('login',{method:'POST',body:JSON.stringify({password:$('#password').value})});$('#login').style.display='none';boot()}catch(e){$('#loginMsg').textContent=e.message}}
+async function logout(){await api('logout',{method:'POST'});location.reload()}
+document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>{document.querySelectorAll('section').forEach(x=>x.hidden=true);$('#'+b.dataset.view).hidden=false;document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');({dashboard:loadDashboard,accounts:loadAccounts,keys:loadKeys,logs:loadLogs,config:loadConfig})[b.dataset.view]()});
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function dt(v){return v?new Date(v*1000).toLocaleString():'-'}
+async function loadDashboard(){const [stats,accounts,keys]=await Promise.all([api('stats'),api('accounts'),api('keys')]);$('#stAccounts').textContent=accounts.accounts.length;$('#stKeys').textContent=keys.keys.length;$('#stTotal').textContent=stats.total;$('#stErrors').textContent=stats.errors;$('#byKey').innerHTML=Object.entries(stats.by_key).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')||'<tr><td colspan="2" class="muted">暂无数据</td></tr>';const days=Object.entries(stats.daily).sort();const max=Math.max(1,...days.map(x=>x[1]));$('#chart').innerHTML=days.map(([d,v])=>`<div style="display:flex;align-items:center;gap:8px;margin:5px 0"><span class="muted" style="width:78px">${d}</span><div class="bar" style="flex:1"><i style="width:${v/max*100}%"></i></span></span><span style="width:45px;text-align:right">${v}</span></div>`).join('')||'<span class="muted">暂无数据</span>'}
+async function loadAccounts(){const d=await api('accounts');state.accounts=d.accounts;$('#accountRows').innerHTML=d.accounts.map(a=>`<tr><td><b>${esc(a.nickname||a.uid)}</b><div class="muted mono">${esc(a.uid)}</div></td><td>${a.disabled?'<span class="pill off">禁用</span>':a.cooling?'<span class="pill">冷却</span>':'<span class="pill on">健康</span>'}${a.reason?`<div class="muted">${esc(a.reason)}</div>`:''}</td><td>${a.has_api_key?'API key':'Access token'}</td><td><button onclick="accountOp('${esc(a.uid)}','refresh')">刷新</button> <button onclick="accountOp('${esc(a.uid)}','keepalive')">保活</button> <button class="danger" onclick="accountOp('${esc(a.uid)}','delete')">删除</button></td></tr>`).join('')||'<tr><td colspan="4" class="muted">暂无账号</td></tr>'}
+function showAccountForm(){$('#accountMsg').textContent='';$('#accountDialog').showModal()}
+async function addAccount(){$('#accountMsg').textContent='提交中...';try{await api('accounts',{method:'POST',body:JSON.stringify({code:$('#authCode').value.trim(),verifier:$('#authVerifier').value.trim()})});$('#accountDialog').close();$('#authCode').value='';$('#authVerifier').value='';loadAccounts()}catch(e){$('#accountMsg').textContent=e.message}}
+async function accountOp(uid,op){if(op==='delete'&&!confirm('确定删除账号 '+uid+'？'))return;try{await api(`accounts/${encodeURIComponent(uid)}/${op}`,{method:'POST'});loadAccounts()}catch(e){alert(e.message)}}
+async function loadKeys(){const d=await api('keys');state.keys=d.keys;$('#keyRows').innerHTML=d.keys.map(k=>`<tr><td>${esc(k.name)}</td><td class="mono">${esc(k.key_preview)}</td><td>${k.used_requests}${k.max_requests?' / '+k.max_requests:' / ∞'}</td><td><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'启用':'禁用'}</span></td><td><button onclick="toggleKey('${k.id}',${!k.enabled})">${k.enabled?'禁用':'启用'}</button> <button class="danger" onclick="deleteKey('${k.id}')">删除</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无密钥</td></tr>'}
+async function createKey(){$('#newKeyMsg').textContent='创建中...';try{const d=await api('keys',{method:'POST',body:JSON.stringify({name:$('#keyName').value,max_requests:+$('#keyMax').value||0})});$('#newKeyMsg').innerHTML='新密钥只显示一次：<b class="mono">'+esc(d.key)+'</b>';loadKeys()}catch(e){$('#newKeyMsg').textContent=e.message}}
+async function toggleKey(id,enabled){await api('keys/'+id,{method:'PATCH',body:JSON.stringify({enabled})});loadKeys()}
+async function deleteKey(id){if(!confirm('确定删除该密钥？'))return;await api('keys/'+id,{method:'DELETE'});loadKeys()}
+async function loadLogs(){const d=await api('logs?limit=200');$('#logRows').innerHTML=d.entries.map(e=>`<tr><td>${dt(e.time)}</td><td>${esc(e.key_name||e.key_id)}</td><td>${esc(e.uid)}</td><td>${esc(e.model)}</td><td class="${e.status>=400?'error':''}">${e.status}</td><td>${e.latency_ms}ms</td><td>${e.prompt_tokens}/${e.completion_tokens}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">暂无日志</td></tr>'}
+async function clearLogs(){if(confirm('确定清空日志？')){await fetch('/admin/api/logs',{method:'DELETE'});loadLogs()}}
+async function loadConfig(){const d=await api('config');$('#configText').value=JSON.stringify(d.config,null,2)}
+async function saveConfig(){try{JSON.parse($('#configText').value);await api('config',{method:'PUT',body:$('#configText').value});$('#configMsg').textContent='已保存'}catch(e){$('#configMsg').textContent=e.message}}
+async function boot(){try{await api('me');$('#login').style.display='none';loadDashboard()}catch(e){$('#login').style.display='grid'}}
+$('#password').addEventListener('keydown',e=>{if(e.key==='Enter')login()});boot()
+</script></body></html>
