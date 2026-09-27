@@ -256,7 +256,13 @@ func SaveConfigMap(path string, raw map[string]any) error {
 		}
 		out[key] = value
 	}
-	if listen, ok := existing["listen"]; ok {
+	if listen, ok := raw["listen"].(string); ok && strings.TrimSpace(listen) != "" {
+		listen = strings.TrimSpace(listen)
+		if !strings.Contains(listen, ":") {
+			listen = ":" + listen
+		}
+		out["listen"] = listen
+	} else if listen, ok := existing["listen"]; ok {
 		out["listen"] = listen
 	}
 	if adminConfig, ok := existing["admin"]; ok {
