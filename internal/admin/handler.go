@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,10 +25,13 @@ type AccountManager struct {
 
 // Handler 承载 /admin 页面与 /admin/api/* 接口。
 type Handler struct {
-	store       *Store
-	Accounts    *AccountManager
-	PasswordSet func() bool
-	Verify      func(password string) bool
+	store          *Store
+	Accounts       *AccountManager
+	configPath     string
+	passwordHash   *string
+	PasswordSet    func() bool
+	Verify         func(password string) bool
+	ChangePassword func(password string) error
 }
 
 // LookupKey 暴露分发密钥查询，供 /v1 网关鉴权。
@@ -49,9 +54,9 @@ func (h *Handler) LegacyUnauthenticated() bool {
 	return h.store != nil && h.store.legacyUnauthenticated
 }
 
-// NewHandler 构建管理端 Handler；密码回调由 server 注入。
-func NewHandler(store *Store, passwordSet func() bool, verify func(string) bool) *Handler {
-	return &Handler{store: store, PasswordSet: passwordSet, Verify: verify}
+// NewHandler 构建管理端 Handler；密码哈希写入配置路径由 server 提交。
+func NewHandler(store *Store, configPath string, passwordHash *string) *Handler {
+	return &Handler{store: store, configPath: configPath, passwordHash: passwordHash, PasswordSet: func() bool { return true }}
 }
 
 func (h *Handler) page(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +138,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeAdminJSON(w, http.StatusOK, h.store.Stats())
+	case "password":
+		h.changePassword(w, r)
 	case "config":
 		h.config(w, r)
 	default:
@@ -318,6 +325,27 @@ func (h *Handler) keys(w http.ResponseWriter, r *http.Request, tail []string) {
 	}
 }
 
+func updateConfigFile(path, outputPath, key, value string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	admin, ok := doc["admin"].(map[string]any)
+	if !ok {
+		admin = map[string]any{}
+		doc["admin"] = admin
+	}
+	admin[key] = value
+	encoded, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(outputPath, append(encoded, '\n'), 0o600)
+}
 func applyKeyPatch(key *APIKey, fields map[string]any) {
 	if value, ok := fields["enabled"].(bool); ok {
 		key.Enabled = value
@@ -342,6 +370,39 @@ func applyKeyPatch(key *APIKey, fields map[string]any) {
 	}
 }
 
+func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAdminJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req) != nil {
+		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request"})
+		return
+	}
+	if len(req.Password) < 8 {
+		writeAdminJSON(w, http.StatusBadRequest, map[string]any{"error": "password must be at least 8 characters"})
+		return
+	}
+	if h.configPath == "" || h.passwordHash == nil {
+		writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": "password storage is not configured"})
+		return
+	}
+	hash := HashPassword(req.Password)
+	tmp := h.configPath + ".tmp"
+	if err := updateConfigFile(h.configPath, tmp, "password_hash", hash); err != nil {
+		writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := os.Rename(tmp, h.configPath); err != nil {
+		writeAdminJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	*h.passwordHash = hash
+	writeAdminJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
 func (h *Handler) config(w http.ResponseWriter, r *http.Request) {
 	if h.store.config == nil {
 		writeAdminJSON(w, http.StatusNotImplemented, map[string]any{"error": "config callback not configured"})

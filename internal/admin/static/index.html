@@ -33,7 +33,22 @@ dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::ba
 <section id="accounts" hidden><div class="card"><div class="row"><button class="primary" onclick="showAccountForm()">添加账号</button><button onclick="loadAccounts()">刷新</button></div><table><thead><tr><th>账号</th><th>状态</th><th>Token</th><th>操作</th></tr></thead><tbody id="accountRows"></tbody></table></div></section>
 <section id="keys" hidden><div class="card"><div class="row"><div class="field"><label>名称</label><input id="keyName" value="默认密钥"></div><div class="field"><label>次数上限（0 无限）</label><input id="keyMax" type="number" value="0"></div><button class="primary" onclick="createKey()">创建</button><button onclick="loadKeys()">刷新</button></div><p id="newKeyMsg"></p><table><thead><tr><th>名称</th><th>密钥</th><th>配额</th><th>状态</th><th>操作</th></tr></thead><tbody id="keyRows"></tbody></table></div></section>
 <section id="logs" hidden><div class="card"><div class="row"><button onclick="loadLogs()">刷新</button><button class="danger" onclick="clearLogs()">清空日志</button></div><table><thead><tr><th>时间</th><th>密钥</th><th>账号</th><th>模型</th><th>状态</th><th>耗时</th><th>Tokens</th></tr></thead><tbody id="logRows"></tbody></table></div></section>
-<section id="config" hidden><div class="card"><textarea id="configText"></textarea><div class="row"><button class="primary" onclick="saveConfig()">保存</button><button onclick="loadConfig()">重新加载</button></div><p id="configMsg"></p></div></section>
+<section id="config" hidden>
+  <div class="card">
+    <h3>管理员密码</h3>
+    <div class="row">
+      <div class="field"><label>新密码</label><input id="newPassword" type="password" placeholder="至少 8 位"></div>
+      <button class="primary" onclick="changePassword()">修改密码</button>
+    </div>
+    <p id="passwordMsg"></p>
+  </div>
+  <div class="card">
+    <h3>配置文件</h3>
+    <textarea id="configText"></textarea>
+    <div class="row"><button class="primary" onclick="saveConfig()">保存</button><button onclick="loadConfig()">重新加载</button></div>
+    <p id="configMsg"></p>
+  </div>
+</section>
 </main>
 <dialog id="accountDialog"><h3>添加账号</h3><p class="muted">1. 点击生成授权链接；2. 在浏览器打开并登录；3. 复制成功页面里的 code；4. 粘贴到下方提交。</p><div class="row"><button onclick="makeOAuthURL()">生成授权链接</button><button onclick="openOAuthURL()">打开链接</button></div><div class="field"><label>授权链接</label><textarea id="oauthURL" rows="3"></textarea></div><div class="field"><label>Authorization code</label><textarea id="authCode" rows="4"></textarea></div><div class="row"><button class="primary" onclick="addAccount()">提交授权码</button><button onclick="document.getElementById('accountDialog').close()">取消</button></div><p id="accountMsg"></p></dialog>
 <script>
@@ -57,6 +72,7 @@ async function toggleKey(id,enabled){await api('keys/'+id,{method:'PATCH',body:J
 async function deleteKey(id){if(!confirm('确定删除该密钥？'))return;await api('keys/'+id,{method:'DELETE'});loadKeys()}
 async function loadLogs(){const d=await api('logs?limit=200');$('#logRows').innerHTML=d.entries.map(e=>`<tr><td>${dt(e.time)}</td><td>${esc(e.key_name||e.key_id)}</td><td>${esc(e.uid)}</td><td>${esc(e.model)}</td><td class="${e.status>=400?'error':''}">${e.status}</td><td>${e.latency_ms}ms</td><td>${e.prompt_tokens}/${e.completion_tokens}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">暂无日志</td></tr>'}
 async function clearLogs(){if(confirm('确定清空日志？')){await fetch('/admin/api/logs',{method:'DELETE'});loadLogs()}}
+async function changePassword(){const password=$('#newPassword').value;if(password.length<8){$('#passwordMsg').textContent='密码至少 8 位';return}$('#passwordMsg').textContent='提交中...';try{await api('password',{method:'POST',body:JSON.stringify({password})});$('#newPassword').value='';$('#passwordMsg').textContent='已修改，下次登录使用新密码'}catch(e){$('#passwordMsg').textContent=e.message}}
 async function loadConfig(){const d=await api('config');$('#configText').value=JSON.stringify(d.config,null,2)}
 async function saveConfig(){try{JSON.parse($('#configText').value);await api('config',{method:'PUT',body:$('#configText').value});$('#configMsg').textContent='已保存'}catch(e){$('#configMsg').textContent=e.message}}
 async function boot(){try{await api('me');$('#login').style.display='none';loadDashboard()}catch(e){$('#login').style.display='grid'}}

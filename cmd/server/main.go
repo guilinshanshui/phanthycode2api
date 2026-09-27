@@ -95,15 +95,13 @@ func main() {
 			GetConfig:  func() map[string]any { return cfg.ToMap() },
 			SaveConfig: func(raw map[string]any) error { return SaveConfigMap(*cfgPath, raw) },
 		})
-		adminHandler = admin.NewHandler(adminStore,
-			func() bool { return true },
-			func(password string) bool {
-				if cfg.Admin.PasswordHash == "" {
-					return subtle.ConstantTimeCompare([]byte(password), []byte(defaultAdminPassword)) == 1
-				}
-				return admin.VerifyPassword(password, cfg.Admin.PasswordHash)
-			},
-		)
+		adminHandler = admin.NewHandler(adminStore, *cfgPath, &cfg.Admin.PasswordHash)
+		adminHandler.Verify = func(password string) bool {
+			if cfg.Admin.PasswordHash == "" {
+				return subtle.ConstantTimeCompare([]byte(password), []byte(defaultAdminPassword)) == 1
+			}
+			return admin.VerifyPassword(password, cfg.Admin.PasswordHash)
+		}
 		adminHandler.Accounts = &admin.AccountManager{
 			StartOAuth: func() (map[string]any, error) { return StartOAuthLogin(cfg.BaseURL, cfg.AuthDir) },
 			List: func() []map[string]any {
