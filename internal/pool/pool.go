@@ -188,6 +188,27 @@ func (p *Pool) Disable(uid, reason string) {
 	p.saveLocked()
 }
 
+// Enable 清除账号的禁用与冷却状态（手动刷新/保活成功后调用）。
+func (p *Pool) Enable(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.disabled = false
+		e.reason = ""
+		e.until = time.Time{}
+		e.errCount = 0
+	}
+	p.saveLocked()
+}
+
+// Remove 从账号池移除指定账号。
+func (p *Pool) Remove(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.byUID, uid)
+	p.saveLocked()
+}
+
 // NoteError 记录一次非余额/非 429 错误；达到 threshold 自动冷却 d 时长。
 func (p *Pool) NoteError(uid string, threshold int, d time.Duration) {
 	p.mu.Lock()

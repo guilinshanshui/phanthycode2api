@@ -48,12 +48,13 @@ type Config struct {
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:    ":7863",
+		Listen:    ":7864",
 		APIKey:    "",
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 		BaseURL:   "https://code.phanthy.com",
 	}
+	c.Admin.Enabled = true
 	c.Admin.DataDir = "./data/admin"
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
@@ -138,6 +139,7 @@ func (c *Config) normalize() error {
 		c.Upstream.TimeoutSeconds = 120
 	}
 	if c.Admin.DataDir == "" {
+		c.Admin.Enabled = true
 		c.Admin.DataDir = "./data/admin"
 	}
 	if c.BaseURL == "" {

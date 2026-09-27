@@ -85,6 +85,11 @@ func main() {
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
 	})
 
+	if !cfg.Admin.Enabled && cfg.Admin.PasswordHash == "" {
+		cfg.Admin.Enabled = true
+		log.Print("admin password not configured; enabling /admin with default password admin123")
+	}
+
 	adminStore, err := admin.New(cfg.Admin.DataDir)
 	if err != nil {
 		log.Fatalf("load admin data: %v", err)
@@ -118,7 +123,12 @@ func main() {
 			Add: func(req map[string]any) error {
 				code, _ := req["code"].(string)
 				verifier, _ := req["verifier"].(string)
-				return ExchangeAndSaveAccount(upstream.New(cfg.BaseURL), cfg.AuthDir, code, verifier)
+				account, err := ExchangeAndSaveAccount(upstream.New(cfg.BaseURL), cfg.AuthDir, code, verifier)
+				if err != nil {
+					return err
+				}
+				p.Add(account)
+				return nil
 			},
 			Delete:    func(uid string) error { return DeleteAccount(cfg.AuthDir, p, uid) },
 			Refresh:   func(uid string) error { return RefreshAccount(upstream.New(cfg.BaseURL), p, uid) },
@@ -292,21 +302,21 @@ func StartOAuthLogin(baseURL, authDir string) (map[string]any, error) {
 }
 
 // ExchangeAndSaveAccount 用授权码换取 token 并写入账号目录。
-func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier string) error {
+func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier string) (*auth.Auth, error) {
 	code := extractCode(rawCode)
 	if code == "" {
-		return fmt.Errorf("authorization code is empty")
+		return nil, fmt.Errorf("authorization code is empty")
 	}
 	verifier := strings.TrimSpace(rawVerifier)
 	if verifier == "" {
 		raw, err := os.ReadFile(filepath.Join(dir, ".admin-login-verifier"))
 		if err != nil {
-			return fmt.Errorf("read verifier: %w", err)
+			return nil, fmt.Errorf("read verifier: %w", err)
 		}
 		verifier = strings.TrimSpace(string(raw))
 	}
 	if verifier == "" {
-		return fmt.Errorf("PKCE verifier is empty")
+		return nil, fmt.Errorf("PKCE verifier is empty")
 	}
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
@@ -320,12 +330,12 @@ func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier s
 	req.Header.Set("anthropic-beta", client.OAuthBetaHeader)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var token struct {
 		AccessToken  string `json:"access_token"`
@@ -333,23 +343,26 @@ func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier s
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(raw, &token); err != nil {
-		return err
+		return nil, err
 	}
 	if token.AccessToken == "" {
-		return fmt.Errorf("no access_token in response")
+		return nil, fmt.Errorf("no access_token in response")
 	}
-	auth := &auth.Auth{
+	account := &auth.Auth{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix(),
 		UID:          fmt.Sprintf("phanthy-%d", time.Now().Unix()),
 		Nickname:     "phanthy-" + time.Now().Format("0102"),
 	}
-	if err := saveAuth(dir, auth); err != nil {
-		return err
+	if err := saveAuth(dir, account); err != nil {
+		return nil, err
 	}
-	_ = client.EnsureAPIKey(auth)
-	return auth.SaveAtomic()
+	_ = client.EnsureAPIKey(account)
+	if err := account.SaveAtomic(); err != nil {
+		return nil, err
+	}
+	return account, nil
 }
 
 // DeleteAccount 删除凭证文件并从账号池移除。
@@ -368,7 +381,7 @@ func DeleteAccount(dir string, pool *pool.Pool, uid string) error {
 		if err := os.Remove(path); err != nil {
 			return err
 		}
-		pool.SyncToDir(nil)
+		pool.Remove(uid)
 		return nil
 	}
 	return fmt.Errorf("account file not found")
@@ -383,7 +396,11 @@ func RefreshAccount(client *upstream.Client, pool *pool.Pool, uid string) error 
 	if err := client.RefreshToken(acct); err != nil {
 		return err
 	}
-	return acct.SaveAtomic()
+	if err := acct.SaveAtomic(); err != nil {
+		return err
+	}
+	pool.Enable(uid)
+	return nil
 }
 
 // KeepaliveAccount 拉取账号 profile，用于校验会话并触发上游活跃度。
@@ -400,8 +417,11 @@ func KeepaliveAccount(client *upstream.Client, pool *pool.Pool, uid string) erro
 			return err
 		}
 	}
-	_, err := client.FetchProfile(acct)
-	return err
+	if _, err := client.FetchProfile(acct); err != nil {
+		return err
+	}
+	pool.Enable(uid)
+	return nil
 }
 
 // saveAuth 写入新账号凭证。
