@@ -22,6 +22,27 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 .muted{color:var(--muted)}.error{color:var(--danger)}.mono{font-family:ui-monospace,Consolas,monospace}
 #login{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:10}.login-card{width:min(420px,92vw);background:#fff;padding:24px;border-radius:14px;border:1px solid var(--line)}
 dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::backdrop{background:#0006}.bar{height:10px;background:#eef2f6;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--brand)}
+.page-title{margin:0 0 18px}.page-title h2{margin:0;font-size:22px;letter-spacing:-.01em}.page-title p{margin:5px 0 0;color:var(--muted);font-size:13px}
+.settings-card{background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 1px 2px rgba(16,24,40,.04);margin-bottom:18px;overflow:hidden}
+.settings-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 20px;border-bottom:1px solid var(--line)}
+.settings-head h3{margin:0;font-size:15px}.settings-head p{margin:4px 0 0;color:var(--muted);font-size:12.5px}
+.settings-body{padding:20px}
+.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.settings-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.settings-card .field label{font-size:12.5px;font-weight:600;color:#374151}
+.settings-card .hint{font-size:12px;color:var(--muted)}
+.settings-card input,.settings-card textarea{width:100%}
+.settings-card input:focus,.settings-card textarea:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.settings-card input:disabled{background:#f9fafb;color:var(--muted)}
+.settings-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:20px}
+.settings-actions.sticky{padding:14px 20px;background:#fafbfc;border-top:1px solid var(--line);margin-top:0}
+.msg{font-size:13px;color:var(--muted)}
+details.raw summary{cursor:pointer;padding:16px 20px;font-weight:600;font-size:14px;color:#374151;list-style:none}
+details.raw summary::-webkit-details-marker{display:none}
+details.raw summary:after{content:"展开";float:right;color:var(--brand);font-weight:500;font-size:13px}
+details.raw[open] summary:after{content:"收起"}
+@media(max-width:900px){.settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.settings-grid,.settings-grid.two{grid-template-columns:1fr}}
 @media(max-width:720px){header{flex-wrap:wrap;height:auto;padding:10px}nav{width:100%}table{display:block;overflow:auto}}
 </style>
 </head>
@@ -34,41 +55,51 @@ dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::ba
 <section id="keys" hidden><div class="card"><div class="row"><div class="field"><label>名称</label><input id="keyName" value="默认密钥"></div><div class="field"><label>次数上限（0 无限）</label><input id="keyMax" type="number" value="0"></div><button class="primary" onclick="createKey()">创建</button><button onclick="loadKeys()">刷新</button></div><p id="newKeyMsg"></p><table><thead><tr><th>名称</th><th>密钥</th><th>配额</th><th>状态</th><th>操作</th></tr></thead><tbody id="keyRows"></tbody></table></div></section>
 <section id="logs" hidden><div class="card"><div class="row"><button onclick="loadLogs()">刷新</button><button class="danger" onclick="clearLogs()">清空日志</button></div><table><thead><tr><th>时间</th><th>密钥</th><th>账号</th><th>模型</th><th>状态</th><th>耗时</th><th>Tokens</th></tr></thead><tbody id="logRows"></tbody></table></div></section>
 <section id="config" hidden>
-  <div class="card">
-    <h3>管理员密码</h3>
-    <div class="row">
-      <div class="field"><label>新密码</label><input id="newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password"></div>
-      <div class="field"><label>确认新密码</label><input id="confirmPassword" type="password" placeholder="再次输入" autocomplete="new-password"></div>
-      <button class="primary" onclick="changePassword()">修改密码</button>
-    </div>
-    <p id="passwordMsg"></p>
-  </div>
-  <div class="card">
-    <h3>基础设置</h3>
-    <div class="grid">
-      <div class="field"><label>监听地址（重启生效）</label><input id="cfgListen" disabled></div>
-      <div class="field"><label>全局 API Key</label><input id="cfgAPIKey"></div>
-      <div class="field"><label>账号目录</label><input id="cfgAuthDir"></div>
-      <div class="field"><label>状态文件</label><input id="cfgStateFile"></div>
-      <div class="field"><label>上游地址</label><input id="cfgBaseURL"></div>
-      <div class="field"><label>上游超时（秒）</label><input id="cfgTimeout" type="number" min="1"></div>
+  <div class="page-title"><h2>设置</h2><p>管理登录密码与运行参数，保存后重启程序生效。</p></div>
+  <div class="settings-card">
+    <div class="settings-head"><div><h3>管理员密码</h3><p>修改后立即生效，下次登录使用新密码。</p></div></div>
+    <div class="settings-body">
+      <div class="settings-grid two">
+        <div class="field"><label>新密码</label><input id="newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password"><span class="hint">建议使用字母、数字和符号组合</span></div>
+        <div class="field"><label>确认新密码</label><input id="confirmPassword" type="password" placeholder="再次输入新密码" autocomplete="new-password"></div>
+      </div>
+      <div class="settings-actions"><button class="primary" onclick="changePassword()">修改密码</button><span id="passwordMsg" class="msg"></span></div>
     </div>
   </div>
-  <div class="card">
-    <h3>冷却与调度</h3>
-    <div class="grid">
-      <div class="field"><label>积分不足冷却</label><input id="cfgHardCredit"></div>
-      <div class="field"><label>限流冷却</label><input id="cfgSoftRate"></div>
-      <div class="field"><label>连续错误阈值</label><input id="cfgErrThreshold" type="number" min="1"></div>
-      <div class="field"><label>错误冷却</label><input id="cfgErrCooldown"></div>
-      <div class="field"><label>保活小时（逗号分隔）</label><input id="cfgKeepaliveHours" placeholder="22"></div>
+  <div class="settings-card">
+    <div class="settings-head"><div><h3>基础设置</h3><p>服务监听、凭证目录与上游连接参数。</p></div></div>
+    <div class="settings-body">
+      <div class="settings-grid">
+        <div class="field"><label>监听地址</label><input id="cfgListen" disabled><span class="hint">修改后需重启生效</span></div>
+        <div class="field"><label>全局 API Key</label><input id="cfgAPIKey" placeholder="留空表示不鉴权"><span class="hint">下游客户端使用的 Bearer Token</span></div>
+        <div class="field"><label>账号目录</label><input id="cfgAuthDir"><span class="hint">OAuth 凭证保存位置</span></div>
+        <div class="field"><label>状态文件</label><input id="cfgStateFile"><span class="hint">账号冷却状态持久化位置</span></div>
+        <div class="field"><label>上游地址</label><input id="cfgBaseURL"><span class="hint">PhanthyCode 服务地址</span></div>
+        <div class="field"><label>上游超时</label><input id="cfgTimeout" type="number" min="1"><span class="hint">单位：秒</span></div>
+      </div>
     </div>
   </div>
-  <div class="card">
-    <h3>高级：原始配置文件</h3>
-    <textarea id="configText" style="min-height:220px"></textarea>
-    <div class="row"><button class="primary" onclick="saveConfig()">保存配置</button><button onclick="loadConfig()">重新加载</button><button onclick="saveRawConfig()">保存原始 JSON</button></div>
-    <p id="configMsg"></p>
+  <div class="settings-card">
+    <div class="settings-head"><div><h3>冷却与调度</h3><p>账号异常后的冷却策略与每日保活时间。</p></div></div>
+    <div class="settings-body">
+      <div class="settings-grid">
+        <div class="field"><label>积分不足冷却</label><input id="cfgHardCredit" placeholder="12h"><span class="hint">例如 12h、30m</span></div>
+        <div class="field"><label>限流冷却</label><input id="cfgSoftRate" placeholder="60s"><span class="hint">例如 60s、5m</span></div>
+        <div class="field"><label>连续错误阈值</label><input id="cfgErrThreshold" type="number" min="1"><span class="hint">达到后进入错误冷却</span></div>
+        <div class="field"><label>错误冷却</label><input id="cfgErrCooldown" placeholder="10m"><span class="hint">例如 10m、1h</span></div>
+        <div class="field"><label>保活小时</label><input id="cfgKeepaliveHours" placeholder="22"><span class="hint">多个小时用逗号分隔</span></div>
+      </div>
+      <div class="settings-actions sticky"><button class="primary" onclick="saveConfig()">保存配置</button><button onclick="loadConfig()">重新加载</button><span id="configMsg" class="msg"></span></div>
+    </div>
+  </div>
+  <div class="settings-card">
+    <details class="raw">
+      <summary>高级：原始配置文件</summary>
+      <div class="settings-body">
+        <textarea id="configText" style="min-height:260px"></textarea>
+        <div class="settings-actions"><button onclick="saveRawConfig()">保存原始 JSON</button><button onclick="loadConfig()">重新加载</button><span id="rawMsg" class="msg"></span></div>
+      </div>
+    </details>
   </div>
 </section>
 </main>
@@ -99,7 +130,7 @@ function splitHours(value){return String(value||'').split(/[,\s]+/).map(x=>parse
 async function loadConfig(){const d=await api('config');const c=d.config;$('#cfgListen').value=c.listen||'';$('#cfgAPIKey').value=c.api_key||'';$('#cfgAuthDir').value=c.auth_dir||'';$('#cfgStateFile').value=c.state_file||'';$('#cfgBaseURL').value=c.base_url||'';$('#cfgTimeout').value=c.upstream?.timeout_seconds||120;$('#cfgHardCredit').value=c.cooldown?.hard_credit||'';$('#cfgSoftRate').value=c.cooldown?.soft_rate||'';$('#cfgErrThreshold').value=c.cooldown?.err_threshold||3;$('#cfgErrCooldown').value=c.cooldown?.err_cooldown||'';$('#cfgKeepaliveHours').value=(c.schedule?.keepalive_hours||[]).join(',');$('#configText').value=JSON.stringify(c,null,2)}
 function graphicalConfig(){return {api_key:$('#cfgAPIKey').value,auth_dir:$('#cfgAuthDir').value.trim(),state_file:$('#cfgStateFile').value.trim(),base_url:$('#cfgBaseURL').value.trim(),cooldown:{hard_credit:$('#cfgHardCredit').value.trim(),soft_rate:$('#cfgSoftRate').value.trim(),err_threshold:+$('#cfgErrThreshold').value||3,err_cooldown:$('#cfgErrCooldown').value.trim()},schedule:{keepalive_hours:splitHours($('#cfgKeepaliveHours').value)},upstream:{timeout_seconds:+$('#cfgTimeout').value||120}}}
 async function saveConfig(){$('#configMsg').textContent='保存中...';try{await api('config',{method:'PUT',body:JSON.stringify(graphicalConfig())});$('#configMsg').textContent='已保存，重启后生效';loadConfig()}catch(e){$('#configMsg').textContent=e.message}}
-async function saveRawConfig(){try{const raw=JSON.parse($('#configText').value);await api('config',{method:'PUT',body:JSON.stringify(raw)});$('#configMsg').textContent='已保存，重启后生效';loadConfig()}catch(e){$('#configMsg').textContent=e.message}}
+async function saveRawConfig(){$('#rawMsg').textContent='保存中...';try{const raw=JSON.parse($('#configText').value);await api('config',{method:'PUT',body:JSON.stringify(raw)});$('#rawMsg').textContent='已保存，重启后生效';loadConfig()}catch(e){$('#rawMsg').textContent=e.message}}
 async function boot(){try{await api('me');$('#login').style.display='none';loadDashboard()}catch(e){$('#login').style.display='grid'}}
 $('#password').addEventListener('keydown',e=>{if(e.key==='Enter')login()});boot()
 </script></body></html>
