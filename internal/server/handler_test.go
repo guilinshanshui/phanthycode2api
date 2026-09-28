@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,6 +164,52 @@ func TestChatCompletions_ModelDeniedKeepsAccountHealthy(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "model_not_allowed") {
 		t.Errorf("应返回 model_not_allowed，body=%s", rec.Body.String())
+	}
+}
+
+// TestChatCompletions_DoesNotProbeAPIKeyOnHotPath 回归：上游的 create_api_key
+// 已下线，实测会挂几十秒才返回 404 页面。这个探测绝对不能留在请求热路径上
+// ——放在那里会让服务启动后的第一个请求白白多等半分钟，而 ChatStream 用
+// access_token 兜底本来就能跑通。
+func TestChatCompletions_DoesNotProbeAPIKeyOnHotPath(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, okSSE)
+	}))
+	defer upstreamSrv.Close()
+
+	acctPool := pool.New("")
+	// APIKey 留空：旧实现正是靠这个条件在请求里触发 create_api_key 探测。
+	acctPool.Add(&auth.Auth{
+		UID: "phanthy-test", AccessToken: "tok-test",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	h := NewHandler(Config{Pool: acctPool, Upstream: upstream.New(upstreamSrv.URL), MaxRotate: 2})
+
+	body := `{"model":"phanthy-pro","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP 状态 = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range paths {
+		if strings.Contains(p, "create_api_key") {
+			t.Errorf("请求热路径不应探测 create_api_key，实际访问 %s", p)
+		}
 	}
 }
 

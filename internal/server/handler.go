@@ -268,13 +268,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			_ = acct.SaveAtomic()
 		}
 
-		// 确保 api_key 可用（失败不阻塞，ChatStream 会用 access_token 兜底）
-		if acct.APIKey == "" {
-			// ErrAPIKeyUnsupported 属上游固有行为，已在首次发现时记过日志，这里不再重复。
-			if err := h.cfg.Upstream.EnsureAPIKey(acct); err != nil && !errors.Is(err, upstream.ErrAPIKeyUnsupported) {
-				logx.Debugf("ensure_api_key uid=%s: %v", acct.UID, err)
-			}
-		}
+		// 这里刻意不调 EnsureAPIKey：上游的 create_api_key 接口已下线，实测会
+		// 挂几十秒才返回 404 页面（`upstream.timeout_seconds` 内都算「成功」返回），
+		// 放在热路径上会让对象启动后的第一个请求白白多等半分钟。
+		// ChatStream 会用 access_token 兜底，api_key 只是优化项，交给
+		// keepalive 在后台慢慢补，不影响请求正确性。
 
 		// 准备请求体（OpenAI → Anthropic 转换，并按配置下发 thinking 开关）
 		anthroBody := upstream.PrepareBody(body, h.cfg.Thinking)

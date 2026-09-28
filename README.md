@@ -16,7 +16,8 @@
 - 🗺 **模型映射** — 模型名统一归一化（大小写、空白、`[1m]` 上下文后缀），历史商业名自动映射到当前公开模型 ID
 - 🛡 **模型被拒自动换号** — 上游拒绝某模型（套餐差异 / 阵发性风控）时换健康账号重试，不计错误、不触发冷却；全被拒才返回 `400 model_not_allowed`
 - ⚡ **显式思考开关** — 上游缺省会自行开启扩展思考（首字 10 秒+），本服务总是显式下发 `thinking`，默认关闭，可切 `auto`/`on`
-- 📋 **分级日志** — `debug` / `info` / `error` 三档，默认每个请求一行摘要（含账号、模型、状态、耗时、token），排障时切 `debug` 看换号细节
+- 📋 **分级日志** — `debug` / `info` / `error` 三档，默认每个请求一行摘要（含账号、模型、状态、耗时、token），排障时切 `debug` 看换号细节；Windows 启动脚本会自动把日志落到 `logs\server.out.log`
+- 🚀 **热路径不空等** — 上游的 `create_api_key` 已下线（实测挂几十秒才返回 404 页面），请求路径不再探测它，直接用 access_token 发请求
 - 💠 **额度池视图** — 管理页按官网「套餐」页口径展示钱包总额与分池（套餐池 + 每日登录 / 活动等奖励池），过期批次自动剔除
 - 🎁 **开工奖励对账** — 自动核对奖励台账里的「每日开工奖励」（上游按北京时间 0 点发放），管理页显示今日到账与连续天数，到账当天在日志里提示一次
 - 🧵 **请求上下文透传** — 下游取消请求时立即释放上游连接
@@ -34,6 +35,9 @@
    - macOS Apple Silicon：`phanthycode2api-darwin-arm64.tar.gz`
 3. 解压到任意目录。
 4. 双击 `phanthycode2api.exe`（Windows），或运行 `./phanthycode2api`。
+
+   更省事的是双击同目录下的 `start-server.bat`：它会切到程序目录启动，运行日志**既打印在
+   窗口里、又追加写进 `logs\server.out.log`**，忘了截窗口日志也能事后翻文件。
 5. 浏览器打开管理页：
 
    ```text
@@ -209,11 +213,13 @@ model_reasoning_effort = "low"
 
 ### 日志级别
 
-服务日志写入标准错误：双击运行时看那个控制台窗口，需要留存就自行重定向，例如 `./phanthycode2api > server.err.log 2>&1`。`log_level` 控制详细程度：
+服务日志写入标准错误：双击运行时看那个控制台窗口；Windows 用 `start-server.bat` 启动则
+窗口显示的同时追加到 `logs\server.out.log`，其他平台可自行重定向，例如
+`./phanthycode2api > server.err.log 2>&1`。`log_level` 控制详细程度：
 
 | 级别 | 输出内容 |
 |---|---|
-| `debug` | 上面全部，外加每次换号、上游状态码、`ensure_api_key` 兜底等逐次尝试细节 |
+| `debug` | 上面全部，外加每次换号、上游状态码、`ensure_api_key` 探测结果等逐次尝试细节 |
 | `info`（默认） | 启动信息、keepalive 结果，以及每个请求一行摘要：`req key=... uid=... model=... status=200 1234ms tokens=123/45 stream=true` |
 | `error` | 只输出失败与异常（上游报错、写盘失败等） |
 
@@ -415,6 +421,7 @@ phanthycode2api/
 │   ├── admin/           # Web 管理台（PBKDF2 登录、账号 / 密钥 / 日志 / 配置）
 │   └── logx/            # 分级日志（debug / info / error）
 ├── config.example.json  # 配置模板
+├── start-server.bat     # Windows 双击启动（切到程序目录、日志落 logs\server.out.log）
 ├── login.sh             # 半自动 OAuth 登录脚本（包装 cmd/login 两步流程）
 ├── credit.sh            # 账号池状态 / credit 查看
 ├── Dockerfile           # 多阶段构建

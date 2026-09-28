@@ -45,6 +45,7 @@ jobs:
           cp phanthycode2api${{ matrix.ext }} "$dir/"
           cp README.md config.example.json "$dir/"
           if [ "${{ matrix.goos }}" = "windows" ]; then
+            cp start-server.bat "$dir/"
             zip -r "$dir.zip" "$dir"
           else
             tar -czf "$dir.tar.gz" "$dir"

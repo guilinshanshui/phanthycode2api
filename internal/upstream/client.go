@@ -348,7 +348,11 @@ func (c *Client) CreateAPIKey(a *auth.Auth) (string, error) {
 	if strings.TrimSpace(a.AccessToken) == "" {
 		return "", fmt.Errorf("no accessToken")
 	}
-	req, err := http.NewRequest(http.MethodPost, c.APIKeyURL, nil)
+	// 该接口在上游已下线：实测会挂几十秒才返回 404 页面。给它一个远小于业务
+	// 超时的上限，避免登录 / keepalive 被这个拿不到的优化项拖住。
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.APIKeyURL, nil)
 	if err != nil {
 		return "", err
 	}
