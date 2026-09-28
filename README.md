@@ -58,7 +58,7 @@
 重启与开机自启：
 
 - **重启服务**：结束进程再启动即可（Windows 在任务管理器里结束 `phanthycode2api.exe`，Linux / macOS 按 `Ctrl+C` 或 `pkill phanthycode2api`）。管理页「设置」里改的配置、新添加的账号都是重启后生效
-- **Windows 开机自启**：按 `Win + R` 输入 `shell:startup`，把 `phanthycode2api.exe` 的**快捷方式**放进打开的文件夹；想要后台静默运行就用「任务计划程序」新建一个「登录时」触发的任务，程序填 exe 路径、「起始位置」填 exe 所在目录
+- **Windows 开机自启**：按 `Win + R` 输入 `shell:startup`，把 `start-server.bat` 的**快捷方式**放进打开的文件夹（比直接放 exe 更好：日志会落到 `logs\server.out.log`，崩了也能翻）；想要后台静默运行就用「任务计划程序」新建一个「登录时」触发的任务，程序填 bat 路径、「起始位置」填程序目录
 - **Linux 开机自启**：写一个 systemd 单元（`ExecStart` 指向二进制、`WorkingDirectory` 指向程序目录、`Restart=always`），再 `systemctl enable --now phanthycode2api`
 
 ### 方式二：源码构建
