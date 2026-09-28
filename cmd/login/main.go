@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"phanthycode2api/internal/auth"
 )
 
 var (
@@ -132,6 +134,7 @@ func stepExchange() {
 	// 落盘
 	uid := fmt.Sprintf("phanthy-%d", time.Now().Unix())
 	expiresAt := time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second).Unix()
+	nickname := auth.UniqueNickname(*outDir, uid, "phanthy-"+time.Now().Format("0102"))
 	doc := map[string]any{
 		"auth": map[string]any{
 			"accessToken":  tr.AccessToken,
@@ -140,7 +143,7 @@ func stepExchange() {
 		},
 		"account": map[string]any{
 			"uid":      uid,
-			"nickname": "phanthy-" + time.Now().Format("0102"),
+			"nickname": nickname,
 		},
 		"api_key": apiKey,
 	}

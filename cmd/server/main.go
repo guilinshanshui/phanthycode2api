@@ -753,12 +753,13 @@ func ExchangeAndSaveAccount(client *upstream.Client, dir, rawCode, rawVerifier s
 	if token.AccessToken == "" {
 		return nil, fmt.Errorf("no access_token in response")
 	}
+	uid := fmt.Sprintf("phanthy-%d", time.Now().Unix())
 	account := &auth.Auth{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix(),
-		UID:          fmt.Sprintf("phanthy-%d", time.Now().Unix()),
-		Nickname:     "phanthy-" + time.Now().Format("0102"),
+		UID:          uid,
+		Nickname:     auth.UniqueNickname(dir, uid, "phanthy-"+time.Now().Format("0102")),
 	}
 	if err := saveAuth(dir, account); err != nil {
 		return nil, err
