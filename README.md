@@ -182,7 +182,7 @@ model_reasoning_effort = "low"
 
 ### 日志级别
 
-服务日志写入标准输出，双击运行时同时落盘到 `logs/server.out.log`。`log_level` 控制详细程度：
+服务日志写入标准错误，双击运行时同时落盘到 `logs/server.err.log`。`log_level` 控制详细程度：
 
 | 级别 | 输出内容 |
 |---|---|
