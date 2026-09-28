@@ -91,6 +91,47 @@ var sessionDeadMarkers = []string{
 	"session expired", "unauthorized", "invalid access token",
 }
 
+// streamDeniedMarkers 只出现在 SSE error 事件里的拒绝类错误码。
+// 上游拒绝服务时 HTTP 状态仍是 200，错误写在事件里，例如
+// {"code":"upstream_permission_denied","message":"Model service access was denied."}。
+// 实测这类拒绝与账号积分无关（同一分钟内同账号换 phanthy-pro 就能成功，
+// 且 /api/oauth/usage 显示额度未消耗），所以按请求侧问题处理，不冷却账号。
+var streamDeniedMarkers = []string{
+	"upstream_permission_denied", "permission_denied",
+	"service access was denied", "access was denied", "access denied",
+}
+
+// ClassifyStreamErr 判定 SSE error 事件的类别。
+// 这类错误的 HTTP 状态恒为 200，Classify 用不上；但关键词（积分不足 /
+// 会话失效 / 模型未授权）与 HTTP 路径一致，因此复用同一批标记。
+func ClassifyStreamErr(code, msg string) ErrKind {
+	lower := strings.ToLower(code + " " + msg)
+	for _, m := range modelDeniedMarkers {
+		if strings.Contains(lower, m) {
+			return ErrModelDenied
+		}
+	}
+	for _, m := range streamDeniedMarkers {
+		if strings.Contains(lower, m) {
+			return ErrModelDenied
+		}
+	}
+	for _, m := range hardMarkers {
+		if strings.Contains(lower, strings.ToLower(m)) {
+			return ErrHardCredit
+		}
+	}
+	for _, m := range sessionDeadMarkers {
+		if strings.Contains(lower, strings.ToLower(m)) {
+			return ErrSessionDead
+		}
+	}
+	if strings.Contains(lower, "overloaded") || strings.Contains(lower, "internal error") {
+		return ErrServer
+	}
+	return ErrClient
+}
+
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 func Classify(status int, body string) ErrKind {
 	if status == http.StatusPaymentRequired {

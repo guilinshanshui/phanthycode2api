@@ -276,57 +276,57 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if status >= 400 {
 			kind := upstream.Classify(status, string(respBody))
 			logx.Debugf("chat uid=%s upstream status=%d kind=%s", acct.UID, status, kind)
-			switch kind {
-			case upstream.ErrHardCredit:
-				h.cfg.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "积分不足")
-				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-				continue
-			case upstream.ErrSoftRate:
-				h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
-				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-				continue
-			case upstream.ErrSessionDead:
-				h.cfg.Pool.Disable(acct.UID, "session dead")
-				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-				continue
-			case upstream.ErrNotFound:
-				h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
-				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-				continue
-			case upstream.ErrModelDenied:
+			if h.applyFailure(acct.UID, kind) {
 				// 403 套餐不含该模型：请求侧问题，账号仍然健康。
 				// 不冷却、不计错误，直接返回客户端，避免把可用账号误伤掉。
 				writeOpenAIError(w, http.StatusBadRequest, "model_not_allowed",
 					"model is not allowed for this plan: "+strings.TrimSpace(string(respBody)))
 				return
-			default:
-				h.cfg.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
-				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-				continue
 			}
+			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
+			continue
 		}
 		defer rc.Close()
-		h.cfg.Pool.NoteSuccess(acct.UID)
 		if served != nil {
 			served.uid = acct.UID
 		}
 
 		if peek.Stream {
-			in, out, err := upstream.Stream(w, rc, peek.Model)
+			in, out, serr := upstream.Stream(w, rc, peek.Model)
 			if served != nil {
 				served.promptTok, served.completionTok = in, out
 			}
-			if err != nil {
-				logx.Errorf("stream uid=%s: %v", acct.UID, err)
+			if serr == nil {
+				h.cfg.Pool.NoteSuccess(acct.UID)
+				return
 			}
+			var se *upstream.StreamError
+			if errors.As(serr, &se) {
+				if h.failStream(w, served, acct.UID, se) {
+					return
+				}
+				lastErr = serr
+				continue
+			}
+			// 写回下游失败（客户端中断等）：上游本身没问题，不再换号。
+			logx.Errorf("stream uid=%s: %v", acct.UID, serr)
 			return
 		}
 		resp, err := upstream.Aggregate(rc, peek.Model)
 		if err != nil {
+			var se *upstream.StreamError
+			if errors.As(err, &se) {
+				if h.failStream(w, served, acct.UID, se) {
+					return
+				}
+				lastErr = err
+				continue
+			}
 			logx.Errorf("aggregate uid=%s: %v", acct.UID, err)
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			return
 		}
+		h.cfg.Pool.NoteSuccess(acct.UID)
 		if served != nil {
 			served.promptTok, served.completionTok = upstream.UsageTotals(resp)
 		}
@@ -338,6 +338,84 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		msg += ": " + lastErr.Error()
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+}
+
+// applyFailure 按上游错误分类更新账号池状态。
+//
+// 返回 true 表示这是「请求侧」问题（当前套餐不含该模型 / 需要换模型），
+// 换号重试没有意义，调用方应直接把错误返回客户端，且不能把账号判成不健康。
+func (h *Handler) applyFailure(uid string, kind upstream.ErrKind) bool {
+	switch kind {
+	case upstream.ErrModelDenied:
+		// 上游按套餐放行模型：同一账号对 phanthy-pro 正常，对未授权模型秒拒。
+		// 这是模型权限问题，不是账号故障，冷却/计错都会误伤可用账号。
+		return true
+	case upstream.ErrHardCredit:
+		h.cfg.Pool.Cooldown(uid, pool.CoolHard, h.cfg.HardCooldown, "积分不足")
+	case upstream.ErrSoftRate:
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
+	case upstream.ErrSessionDead:
+		h.cfg.Pool.Disable(uid, "session dead")
+	case upstream.ErrNotFound:
+		// 上游 404 多为瞬时抖动，短冷却即可，不累计 errCount 以免雪崩。
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
+	default:
+		h.cfg.Pool.NoteError(uid, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+	}
+	return false
+}
+
+// failStream 处理上游用 HTTP 200 + `event: error` 下发的拒绝。
+//
+// 上游拒绝服务时不会返回 4xx/5xx，错误只存在于 SSE 事件流里。旧实现只看状态码，
+// 于是把「被拒绝」当成「正常结束的空回复」，客户端一直转圈、审计日志记成
+// status=200/tokens=0/0 的成功请求。这里按分类如实处理并修正审计状态。
+//
+// 返回 true 表示已经就地响应或收尾，调用方应直接返回；false 表示可换号重试。
+func (h *Handler) failStream(w http.ResponseWriter, served *statusRecorder, uid string, se *upstream.StreamError) bool {
+	if se == nil {
+		return false
+	}
+	ev := se.Event
+	code, msg := "upstream_error", ""
+	if ev != nil {
+		if ev.Code != "" {
+			code = ev.Code
+		}
+		msg = ev.Message
+	}
+	if msg == "" {
+		msg = code
+	}
+	logx.Errorf("stream uid=%s kind=%s code=%s committed=%v msg=%q",
+		uid, se.Kind, code, se.Committed, clip(msg, 300))
+
+	fatal := h.applyFailure(uid, se.Kind)
+
+	if se.Committed {
+		// 响应头/正文已经发给下游，HTTP 状态码改不动了。
+		// 至少别让审计日志继续记成 200 成功，否则这个 bug 又隐身了。
+		if served != nil && served.status < 400 {
+			served.status = http.StatusBadGateway
+		}
+		return true
+	}
+	if !fatal {
+		// 可恢复错误：交给主循环换号重试。
+		return false
+	}
+
+	status, outCode := http.StatusBadGateway, code
+	switch se.Kind {
+	case upstream.ErrModelDenied:
+		status, outCode = http.StatusBadRequest, "model_not_allowed"
+	case upstream.ErrHardCredit:
+		status, outCode = http.StatusPaymentRequired, "insufficient_credit"
+	case upstream.ErrSessionDead:
+		status, outCode = http.StatusBadGateway, "upstream_session_dead"
+	}
+	writeOpenAIError(w, status, outCode, "upstream: "+msg)
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -392,4 +470,12 @@ func orDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+// clip 截断过长的日志文本，避免把整段 HTML 错误页写进日志。
+func clip(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }

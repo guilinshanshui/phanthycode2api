@@ -221,6 +221,11 @@ model_reasoning_effort = "low"
 管理页「设置 → 基础设置 → 日志级别」也能改，保存后重启生效。
 摘要行里的 `uid` 和 `tokens` 同时会写进管理页的请求日志表格。
 
+上游拒绝会额外打印一行 `stream uid=... kind=... code=...`，级别是 `error`，
+不用开 `debug` 就能看到，便于直接从日志定位到具体原因。
+`tokens` 只在上游真正下发该字段时才更新，所以不会出现 `tokens=0/<out>`
+这种把 `input_tokens` 抹成 0 的记录。
+
 ### 可用模型
 
 `/v1/models` 返回的即为下表模型（与上游公开目录一致），可直接作为 `model` 传入：
@@ -238,8 +243,30 @@ model_reasoning_effort = "low"
 | `kimi-k2.7-code` | 256K | 日常任务 |
 | `deepseek-v4.1-flash` | 1M | 日常任务 |
 
-**可用性取决于账户套餐**：未开放的模型上游会返回 `403 model_not_allowed`。
-该错误会以 `400 model_not_allowed` 透传给客户端，且**不会**让账号进入冷却（这是请求侧问题，不是账号故障）。
+**可用性取决于账户套餐**：上游对未开放的模型有两种拒绝姿势，都会被本服务识别：
+
+| 上游表现 | 本服务行为 |
+|---|---|
+| `403 model_not_allowed`（HTTP 状态码） | `400 model_not_allowed` 透传给客户端 |
+| `200 OK` + SSE `event: error`，`code=upstream_permission_denied` | 同上；审计日志状态码记 `400`，不再记成成功 |
+
+两种拒绝都**不会**让账号进入冷却（这是请求侧问题，不是账号故障），也**不会**扣积分。
+
+> 上游拒绝服务时不一定返回 4xx：实测它会用 `HTTP 200 + text/event-stream`
+> 承载错误，正文不到 200 字节，只在事件流里写一条
+> `{"type":"error","error":{"code":"upstream_permission_denied",...}}`。
+> 只认状态码的转发会把这种拒绝当成「正常结束的空回复」——客户端一直转圈，
+> 管理台日志里留下一条 `status=200 tokens=0/0` 的假成功记录。
+
+各账号套餐不同、放行的模型也不同（例如体验版只放行 `phanthy-fast`、`phanthy-pro`
+和小尺寸的 `glm-5.3-flash`）。**报错就换模型**，换账号没有意义。
+
+运行日志里会给出可直接定位的错误行，例如：
+
+```
+stream uid=phanthy-1790570942 kind=model_denied code=upstream_permission_denied committed=false msg="Model service access was denied. ..."
+req key=默认密钥 uid=phanthy-1790570942 model=deepseek-v4.1-flash status=400 327ms tokens=0/0 stream=true
+```
 
 ### 名称兼容
 
