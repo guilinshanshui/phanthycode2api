@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -112,11 +113,17 @@ func main() {
 			List: func() []map[string]any {
 				out := []map[string]any{}
 				for _, status := range p.List() {
-					out = append(out, map[string]any{
+					item := map[string]any{
 						"uid": status.UID, "nickname": status.Nickname, "has_api_key": status.HasAPI,
 						"cooling": status.Cooling, "until": status.Until, "reason": status.Reason,
 						"disabled": status.Disabled, "err_count": status.ErrCount,
-					})
+					}
+					if account := p.AuthByUID(status.UID); account != nil {
+						for key, value := range accountUsage(up, account) {
+							item[key] = value
+						}
+					}
+					out = append(out, item)
 				}
 				return out
 			},
@@ -169,6 +176,68 @@ func main() {
 		log.Fatalf("http: %v", err)
 	}
 	log.Printf("bye")
+}
+
+type usageCacheEntry struct {
+	data map[string]any
+	at   time.Time
+}
+
+var usageCache = struct {
+	sync.Mutex
+	items map[string]usageCacheEntry
+}{items: map[string]usageCacheEntry{}}
+
+// accountUsage 查询账号积分，60 秒内复用缓存，避免频繁请求上游。
+func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
+	if account == nil {
+		return map[string]any{"credits_error": "account not found"}
+	}
+	usageCache.Lock()
+	if entry, ok := usageCache.items[account.UID]; ok && time.Since(entry.at) < time.Minute {
+		data := entry.data
+		usageCache.Unlock()
+		return data
+	}
+	usageCache.Unlock()
+
+	raw, err := client.FetchUsage(account)
+	if err != nil && account.NeedsRefresh(10*time.Minute) {
+		if refreshErr := client.RefreshToken(account); refreshErr == nil {
+			_ = account.SaveAtomic()
+			raw, err = client.FetchUsage(account)
+		}
+	}
+	data := map[string]any{}
+	if err != nil {
+		data["credits_error"] = err.Error()
+	} else {
+		data = extractUsage(raw)
+	}
+	usageCache.Lock()
+	usageCache.items[account.UID] = usageCacheEntry{data: data, at: time.Now()}
+	usageCache.Unlock()
+	return data
+}
+
+// extractUsage 从 /api/oauth/usage 响应中取出管理页需要的积分字段。
+func extractUsage(raw map[string]any) map[string]any {
+	plan, _ := raw["current_plan"].(map[string]any)
+	if plan == nil {
+		plan, _ = raw["seven_day"].(map[string]any)
+	}
+	out := map[string]any{}
+	if plan == nil {
+		out["credits_error"] = "no usage data"
+		return out
+	}
+	out["credits_remaining"] = plan["remaining_credits"]
+	out["credits_total"] = plan["total_credits"]
+	out["credits_used"] = plan["used_credits"]
+	out["credits_percent"] = plan["remaining_percentage"]
+	out["credits_reset_at"] = plan["resets_at"]
+	out["credits_window"] = plan["window_kind"]
+	return out
 }
 
 const defaultAdminPassword = "admin123"

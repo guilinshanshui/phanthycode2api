@@ -132,6 +132,7 @@ type Client struct {
 	OAuthTokenURL   string // {Base}/oauth/token
 	APIKeyURL       string // {Base}/api/oauth/phanthy_cli/create_api_key
 	ProfileURL      string // {Base}/api/oauth/profile
+	UsageURL        string // {Base}/api/oauth/usage
 	ClientID        string // phanthy-code-cli
 	OAuthBetaHeader string // oauth-2025-04-20
 }
@@ -153,6 +154,7 @@ func New(baseURL string) *Client {
 		OAuthTokenURL:   base + "/oauth/token",
 		APIKeyURL:       base + "/api/oauth/phanthy_cli/create_api_key",
 		ProfileURL:      base + "/api/oauth/profile",
+		UsageURL:        base + "/api/oauth/usage",
 		ClientID:        "phanthy-code-cli",
 		OAuthBetaHeader: "oauth-2025-04-20",
 	}
@@ -411,6 +413,32 @@ func (c *Client) FetchProfile(a *auth.Auth) (map[string]any, error) {
 	return m, nil
 }
 
+// FetchUsage 查询账号的积分用量（/api/oauth/usage）。
+func (c *Client) FetchUsage(a *auth.Auth) (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodGet, c.UsageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "phanthycode2api/1.0")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		kind := Classify(resp.StatusCode, string(raw))
+		return nil, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) > n {
