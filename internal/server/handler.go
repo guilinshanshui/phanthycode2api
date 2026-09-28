@@ -8,13 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"phanthycode2api/internal/admin"
+	"phanthycode2api/internal/logx"
 	"phanthycode2api/internal/pool"
 	"phanthycode2api/internal/upstream"
 )
@@ -121,21 +121,35 @@ func (h *Handler) serveWithLog(w http.ResponseWriter, r *http.Request, next http
 	start := time.Now()
 	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	next(recorder, r)
+	latency := time.Since(start).Milliseconds()
 	h.cfg.Admin.NoteRequest(admin.LogEntry{
-		Time:      time.Now().Unix(),
-		KeyID:     keyID,
-		KeyName:   keyName,
-		Model:     model,
-		Status:    recorder.status,
-		LatencyMs: time.Since(start).Milliseconds(),
-		Stream:    stream,
-		RemoteIP:  remoteIP(r),
+		Time:          time.Now().Unix(),
+		KeyID:         keyID,
+		KeyName:       keyName,
+		UID:           recorder.uid,
+		Model:         model,
+		Status:        recorder.status,
+		LatencyMs:     latency,
+		PromptTok:     int64(recorder.promptTok),
+		CompletionTok: int64(recorder.completionTok),
+		Stream:        stream,
+		RemoteIP:      remoteIP(r),
 	})
+	key := keyName
+	if key == "" {
+		key = "-"
+	}
+	logx.Infof("req key=%s uid=%s model=%s status=%d %dms tokens=%d/%d stream=%v",
+		key, orDash(recorder.uid), orDash(model), recorder.status, latency,
+		recorder.promptTok, recorder.completionTok, stream)
 }
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status        int
+	uid           string
+	promptTok     int
+	completionTok int
 }
 
 func (w *statusRecorder) WriteHeader(status int) {
@@ -214,17 +228,23 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	tried := map[string]bool{}
 	var lastErr error
+	var served *statusRecorder
+	if rec, ok := w.(*statusRecorder); ok {
+		served = rec
+	}
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		acct := h.cfg.Pool.PickExcluding(tried)
 		if acct == nil {
 			break
 		}
 		tried[acct.UID] = true
+		logx.Debugf("chat attempt=%d/%d uid=%s model=%s", i+1, h.cfg.MaxRotate, acct.UID, peek.Model)
 
 		// token 临近过期 → 先 refresh（失败冷却换号）
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
 			if err := h.cfg.Upstream.RefreshToken(acct); err != nil {
 				lastErr = err
+				logx.Debugf("chat uid=%s refresh failed: %v", acct.UID, err)
 				var ue *upstream.Error
 				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
 					h.cfg.Pool.Disable(acct.UID, "refresh session dead")
@@ -240,7 +260,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if acct.APIKey == "" {
 			// ErrAPIKeyUnsupported 属上游固有行为，已在首次发现时记过日志，这里不再重复。
 			if err := h.cfg.Upstream.EnsureAPIKey(acct); err != nil && !errors.Is(err, upstream.ErrAPIKeyUnsupported) {
-				log.Printf("ensure_api_key uid=%s: %v", acct.UID, err)
+				logx.Debugf("ensure_api_key uid=%s: %v", acct.UID, err)
 			}
 		}
 
@@ -255,6 +275,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if status >= 400 {
 			kind := upstream.Classify(status, string(respBody))
+			logx.Debugf("chat uid=%s upstream status=%d kind=%s", acct.UID, status, kind)
 			switch kind {
 			case upstream.ErrHardCredit:
 				h.cfg.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "积分不足")
@@ -286,17 +307,28 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rc.Close()
 		h.cfg.Pool.NoteSuccess(acct.UID)
+		if served != nil {
+			served.uid = acct.UID
+		}
 
 		if peek.Stream {
-			if err := upstream.Stream(w, rc, peek.Model); err != nil {
-				log.Printf("stream error: %v", err)
+			in, out, err := upstream.Stream(w, rc, peek.Model)
+			if served != nil {
+				served.promptTok, served.completionTok = in, out
+			}
+			if err != nil {
+				logx.Errorf("stream uid=%s: %v", acct.UID, err)
 			}
 			return
 		}
 		resp, err := upstream.Aggregate(rc, peek.Model)
 		if err != nil {
+			logx.Errorf("aggregate uid=%s: %v", acct.UID, err)
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			return
+		}
+		if served != nil {
+			served.promptTok, served.completionTok = upstream.UsageTotals(resp)
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -352,4 +384,12 @@ func remoteIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// orDash 把空字符串显示成 "-"，避免日志里出现 key= 这种断掉的字段。
+func orDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }

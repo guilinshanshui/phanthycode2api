@@ -9,13 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"phanthycode2api/internal/auth"
+	"phanthycode2api/internal/logx"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长。
@@ -315,7 +315,7 @@ func (c *Client) CreateAPIKey(a *auth.Auth) (string, error) {
 	if resp.StatusCode >= 400 {
 		// 404 说明上游根本没有这个路由，标记后不再重试，且只在首次发现时记一条日志。
 		if resp.StatusCode == http.StatusNotFound && c.apiKeyUnsupported.CompareAndSwap(false, true) {
-			log.Printf("upstream: create_api_key 返回 404，后续请求直接改用 access_token 兜底")
+			logx.Infof("upstream: create_api_key 返回 404，后续请求直接改用 access_token 兜底")
 		}
 		kind := Classify(resp.StatusCode, string(raw))
 		return "", &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
@@ -362,7 +362,7 @@ func (c *Client) EnsureAPIKey(a *auth.Auth) error {
 	a.APIKey = key
 	a.Unlock()
 	if err := a.SaveAtomic(); err != nil {
-		log.Printf("ensure_api_key save uid=%s: %v", a.UID, err)
+		logx.Errorf("ensure_api_key save uid=%s: %v", a.UID, err)
 	}
 	return nil
 }
@@ -394,14 +394,14 @@ func (c *Client) ChatStream(ctx context.Context, a *auth.Auth, body []byte) (rc 
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		log.Printf("chat_stream uid=%s: transport error: %v", a.UID, err)
+		logx.Debugf("chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err
 	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		kind := Classify(resp.StatusCode, string(raw))
-		log.Printf("chat_stream uid=%s: upstream %d %s body=%s", a.UID, resp.StatusCode, kind, truncate(string(raw), 200))
+		logx.Debugf("chat_stream uid=%s: upstream %d %s body=%s", a.UID, resp.StatusCode, kind, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil

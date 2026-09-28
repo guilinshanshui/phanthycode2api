@@ -123,7 +123,8 @@ type toolAccum struct {
 
 // Stream 将上游 Anthropic SSE 流实时转换为 OpenAI SSE 流写回 w。
 // 需要请求方已知 model（入参）。
-func Stream(w http.ResponseWriter, r io.Reader, model string) error {
+// 返回值 usageIn/usageOut 是上游上报的 token 用量，供审计日志记录。
+func Stream(w http.ResponseWriter, r io.Reader, model string) (usageIn, usageOut int, err error) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -166,7 +167,7 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) error {
 			if err == io.EOF {
 				break
 			}
-			return err
+			return st.usageIn, st.usageOut, err
 		}
 	}
 	// 结束：补 finish_reason + [DONE]
@@ -179,13 +180,13 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) error {
 		}
 	}
 	if err := writeEvent(BuildOpenAIStreamChunk(st.id, st.model, 0, map[string]any{}, fr)); err != nil {
-		return err
+		return st.usageIn, st.usageOut, err
 	}
-	_, err := io.WriteString(w, "data: [DONE]\n\n")
+	_, err = io.WriteString(w, "data: [DONE]\n\n")
 	if fl != nil {
 		fl.Flush()
 	}
-	return err
+	return st.usageIn, st.usageOut, err
 }
 
 func handleEvent(st *streamState, ev *anthroEvent, raw string, emit func(map[string]any) error) {

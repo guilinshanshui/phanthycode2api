@@ -4,9 +4,9 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 
+	"phanthycode2api/internal/logx"
 	"phanthycode2api/internal/pool"
 	"phanthycode2api/internal/upstream"
 )
@@ -49,7 +49,7 @@ func nextFire(now time.Time, hours []int) time.Time {
 // Run 主循环，阻塞直到 ctx 取消。
 func (s *Scheduler) Run(ctx context.Context) {
 	// 启动时立即执行一次 keepalive（保证服务起来后账号立即可用）
-	log.Printf("scheduler: running initial keepalive")
+	logx.Infof("scheduler: running initial keepalive")
 	s.RunKeepaliveNow()
 
 	for {
@@ -80,7 +80,7 @@ func (s *Scheduler) RunKeepaliveNow() {
 			continue
 		}
 		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
-			log.Printf("keepalive %s: %v", st.UID, err)
+			logx.Errorf("keepalive %s: %v", st.UID, err)
 			var ue *upstream.Error
 			if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
 				s.cfg.Pool.Disable(st.UID, "session dead")
@@ -90,12 +90,12 @@ func (s *Scheduler) RunKeepaliveNow() {
 		// 确保 api_key 有效
 		if a.APIKey == "" {
 			if err := s.cfg.Upstream.EnsureAPIKey(a); err != nil {
-				log.Printf("keepalive %s ensure_api_key: %v", st.UID, err)
+				logx.Debugf("keepalive %s ensure_api_key: %v", st.UID, err)
 			}
 		}
 		if err := a.SaveAtomic(); err != nil {
-			log.Printf("keepalive %s save: %v", st.UID, err)
+			logx.Errorf("keepalive %s save: %v", st.UID, err)
 		}
-		log.Printf("keepalive %s: token refreshed", st.UID)
+		logx.Infof("keepalive %s: token refreshed", st.UID)
 	}
 }

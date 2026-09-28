@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"phanthycode2api/internal/logx"
 	"phanthycode2api/internal/upstream"
 )
 
@@ -19,6 +20,7 @@ type Config struct {
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
 	BaseURL   string `json:"base_url"`   // https://code.phanthy.com
+	LogLevel  string `json:"log_level"`  // debug | info | error，默认 info
 
 	Admin struct {
 		Enabled      bool   `json:"enabled"`
@@ -63,6 +65,7 @@ func Default() *Config {
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 		BaseURL:   "https://code.phanthy.com",
+		LogLevel:  "info",
 	}
 	c.Admin.Enabled = true
 	c.Admin.DataDir = "./data/admin"
@@ -139,6 +142,9 @@ func applyEnv(c *Config) {
 			c.Thinking.BudgetTokens = n
 		}
 	}
+	if v := os.Getenv("P2A_LOG_LEVEL"); v != "" {
+		c.LogLevel = v
+	}
 }
 
 func (c *Config) normalize() error {
@@ -172,8 +178,12 @@ func (c *Config) normalize() error {
 	normalizedThinking := c.ThinkingOption().Normalize()
 	c.Thinking.Mode = string(normalizedThinking.Mode)
 	c.Thinking.BudgetTokens = normalizedThinking.Budget
+	c.LogLevel = logx.Parse(c.LogLevel).String()
 	return nil
 }
+
+// LogLevelValue 把配置转成 logx 使用的级别。
+func (c *Config) LogLevelValue() logx.Level { return logx.Parse(c.LogLevel) }
 
 // ThinkingOption 把配置转成 upstream 使用的思考策略。
 func (c *Config) ThinkingOption() upstream.ThinkingOption {

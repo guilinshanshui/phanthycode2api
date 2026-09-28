@@ -16,6 +16,7 @@
 - 🗺 **模型映射** — 模型名统一归一化（大小写、空白、`[1m]` 上下文后缀），历史商业名自动映射到当前公开模型 ID
 - 🛡 **模型不可用不误伤账号** — 套餐未开放的模型返回 `400 model_not_allowed`，不计错误、不触发冷却
 - ⚡ **显式思考开关** — 上游缺省会自行开启扩展思考（首字 10 秒+），本服务总是显式下发 `thinking`，默认关闭，可切 `auto`/`on`
+- 📋 **分级日志** — `debug` / `info` / `error` 三档，默认每个请求一行摘要（含账号、模型、状态、耗时、token），排障时切 `debug` 看换号细节
 - 🧵 **请求上下文透传** — 下游取消请求时立即释放上游连接
 - 🏗 **Go 单二进制** — 无第三方依赖，`go build` 即得
 
@@ -110,6 +111,7 @@ http://127.0.0.1:7864/admin
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "base_url": "https://code.phanthy.com",
+  "log_level": "info",
   "cooldown": {
     "hard_credit": "12h",
     "soft_rate": "60s",
@@ -141,6 +143,7 @@ http://127.0.0.1:7864/admin
 | `auth_dir` | `P2A_AUTH_DIR` | `./auths` | 账号凭证目录 |
 | `state_file` | `P2A_STATE_FILE` | `./data/state.json` | 账号状态持久化路径 |
 | `base_url` | `P2A_BASE_URL` | `https://code.phanthy.com` | 上游 API 地址 |
+| `log_level` | `P2A_LOG_LEVEL` | `info` | 日志级别：`debug`（排障）/ `info`（每请求一行）/ `error`（仅异常） |
 | `cooldown.hard_credit` | `P2A_HARD_CREDIT` | `12h` | 积分不足冷却时长 |
 | `cooldown.soft_rate` | `P2A_SOFT_RATE` | `60s` | 限流冷却时长 |
 | `cooldown.err_threshold` | `P2A_ERR_THRESHOLD` | `3` | 连续错误阈值 |
@@ -176,6 +179,20 @@ model_reasoning_effort = "low"
 ```
 
 再把管理页的思考模式设为 `auto`，就能让低推理档位的请求自动走最快路径。
+
+### 日志级别
+
+服务日志写入标准输出，双击运行时同时落盘到 `logs/server.out.log`。`log_level` 控制详细程度：
+
+| 级别 | 输出内容 |
+|---|---|
+| `debug` | 上面全部，外加每次换号、上游状态码、`ensure_api_key` 兜底等逐次尝试细节 |
+| `info`（默认） | 启动信息、keepalive 结果，以及每个请求一行摘要：`req key=... uid=... model=... status=200 1234ms tokens=123/45 stream=true` |
+| `error` | 只输出失败与异常（上游报错、写盘失败等） |
+
+排障时把 `log_level` 改成 `debug`，或设环境变量 `P2A_LOG_LEVEL=debug`；
+管理页「设置 → 基础设置 → 日志级别」也能改，保存后重启生效。
+摘要行里的 `uid` 和 `tokens` 同时会写进管理页的请求日志表格。
 
 ### 可用模型
 

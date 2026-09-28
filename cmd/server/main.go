@@ -25,6 +25,7 @@ import (
 
 	"phanthycode2api/internal/admin"
 	"phanthycode2api/internal/auth"
+	"phanthycode2api/internal/logx"
 	"phanthycode2api/internal/pool"
 	"phanthycode2api/internal/scheduler"
 	"phanthycode2api/internal/server"
@@ -65,12 +66,13 @@ func main() {
 	if err := MakeRelativePathsAbsolute(cfg, baseDir); err != nil {
 		log.Fatalf("resolve config paths: %v", err)
 	}
+	logx.SetLevel(cfg.LogLevelValue())
 
 	auths, err := auth.LoadDir(cfg.AuthDir)
 	if err != nil {
 		log.Fatalf("load auths: %v", err)
 	}
-	log.Printf("loaded %d account(s) from %s", len(auths), cfg.AuthDir)
+	logx.Infof("loaded %d account(s) from %s", len(auths), cfg.AuthDir)
 
 	p := pool.New(cfg.StateFile)
 	for _, a := range auths {
@@ -88,7 +90,7 @@ func main() {
 
 	if !cfg.Admin.Enabled && cfg.Admin.PasswordHash == "" {
 		cfg.Admin.Enabled = true
-		log.Print("admin password not configured; enabling /admin with default password admin123")
+		logx.Infof("admin password not configured; enabling /admin with default password admin123")
 	}
 
 	adminStore, err := admin.New(cfg.Admin.DataDir)
@@ -172,12 +174,12 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("phanthycode2api listening on %s (api_key=%v, admin=%v, thinking=%s)",
-		cfg.Listen, cfg.APIKey != "", adminHandler != nil, cfg.ThinkingOption().Normalize().Mode)
+	logx.Infof("phanthycode2api listening on %s (api_key=%v, admin=%v, thinking=%s, log_level=%s)",
+		cfg.Listen, cfg.APIKey != "", adminHandler != nil, cfg.ThinkingOption().Normalize().Mode, logx.Current())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}
-	log.Printf("bye")
+	logx.Infof("bye")
 }
 
 type usageCacheEntry struct {

@@ -4,6 +4,7 @@
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "base_url": "https://code.phanthy.com",
+  "log_level": "info",
   "cooldown": {
     "hard_credit": "12h",
     "soft_rate": "60s",

@@ -620,6 +620,14 @@ func BuildOpenAIResponse(id, model, role, content, finishReason string, tc []ope
 	return resp
 }
 
+// UsageTotals 从 Aggregate 生成的响应里取出 token 用量，供审计日志记录。
+func UsageTotals(resp map[string]any) (in, out int) {
+	if u, ok := resp["usage"].(*usage); ok && u != nil {
+		return u.PromptTokens, u.CompletionTokens
+	}
+	return 0, 0
+}
+
 // BuildOpenAIStreamChunk 构建单个流式 chunk。
 func BuildOpenAIStreamChunk(id, model string, index int, delta map[string]any, finishReason string) map[string]any {
 	return map[string]any{
