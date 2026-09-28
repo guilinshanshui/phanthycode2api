@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -142,6 +143,8 @@ type Client struct {
 	UsageURL        string // {Base}/api/oauth/usage
 	ClientID        string // phanthy-code-cli
 	OAuthBetaHeader string // oauth-2025-04-20
+	RewardsURL      string // {Base}/api/oauth/rewards
+	UsageSummaryURL string // {Base}/api/oauth/usage/summary
 
 	// apiKeyUnsupported 记录上游是否已确认没有 create_api_key 路由。
 	// 线上该接口固定 404，每次请求都试一遍等于白跑一次往返并刷一条错误日志。
@@ -168,6 +171,8 @@ func New(baseURL string) *Client {
 		UsageURL:        base + "/api/oauth/usage",
 		ClientID:        "phanthy-code-cli",
 		OAuthBetaHeader: "oauth-2025-04-20",
+		RewardsURL:      base + "/api/oauth/rewards",
+		UsageSummaryURL: base + "/api/oauth/usage/summary",
 	}
 }
 
@@ -409,13 +414,69 @@ func (c *Client) ChatStream(ctx context.Context, a *auth.Auth, body []byte) (rc 
 
 // FetchProfile 查询账号信息（可用于状态展示、积分判断）。
 func (c *Client) FetchProfile(a *auth.Auth) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodGet, c.ProfileURL, nil)
+	return c.getJSON(a, c.ProfileURL)
+}
+
+// FetchUsage 查询账号的积分用量（/api/oauth/usage）。
+func (c *Client) FetchUsage(a *auth.Auth) (map[string]any, error) {
+	return c.getJSON(a, c.UsageURL)
+}
+
+// FetchUsageSummary 查询账号按天/按模型的用量明细（/api/oauth/usage/summary）。
+// 响应里的 usage_by_day_and_model 带 cost_points，可用来还原各额度批次的消耗。
+func (c *Client) FetchUsageSummary(a *auth.Auth) (map[string]any, error) {
+	return c.getJSON(a, c.UsageSummaryURL)
+}
+
+// FetchRewards 拉取账号的奖励台账（/api/oauth/rewards），自动翻页。
+// 奖励类型包括每日登录、活动奖励、推荐奖励等，是「每日开工奖励」的账本来源。
+// 翻页中途失败时返回已经拿到的部分，同时把错误一并抛出，交由调用方决定是否使用。
+func (c *Client) FetchRewards(a *auth.Auth) ([]map[string]any, error) {
+	const maxPages = 10
+	items := make([]map[string]any, 0, 40)
+	cursor := ""
+	var firstErr error
+	for page := 0; page < maxPages; page++ {
+		url := c.RewardsURL
+		if cursor != "" {
+			url += "?cursor=" + neturl.QueryEscape(cursor)
+		}
+		raw, err := c.getJSON(a, url)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
+		list, _ := raw["rewards"].([]any)
+		if len(list) == 0 {
+			break
+		}
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				items = append(items, m)
+			}
+		}
+		next, _ := raw["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return items, firstErr
+}
+
+// getJSON 带上游要求的鉴权头发起 GET 并解析 JSON。
+func (c *Client) getJSON(a *auth.Auth, url string) (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("anthropic-beta", c.OAuthBetaHeader)
+	req.Header.Set("x-app", "cli")
 	req.Header.Set("User-Agent", "phanthycode2api/1.0")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -434,32 +495,6 @@ func (c *Client) FetchProfile(a *auth.Auth) (map[string]any, error) {
 	return m, nil
 }
 
-// FetchUsage 查询账号的积分用量（/api/oauth/usage）。
-func (c *Client) FetchUsage(a *auth.Auth) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodGet, c.UsageURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "phanthycode2api/1.0")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 400 {
-		kind := Classify(resp.StatusCode, string(raw))
-		return nil, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) > n {

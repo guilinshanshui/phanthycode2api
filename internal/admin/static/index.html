@@ -44,14 +44,14 @@ details.raw[open] summary:after{content:"收起"}
 @media(max-width:900px){.settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.settings-grid,.settings-grid.two{grid-template-columns:1fr}}
 @media(max-width:720px){header{flex-wrap:wrap;height:auto;padding:10px}nav{width:100%}table{display:block;overflow:auto}}
-</style>
+.wallet{min-width:212px}.wallet-head{font-size:13.5px;font-variant-numeric:tabular-nums}.wallet-head b{font-size:16px;margin-right:1px}.wallet .bar{height:6px;margin:7px 0 8px}.wallet .bar.warn i{background:#f59e0b}.wallet .bar.low i{background:var(--danger)}.pools{display:flex;flex-wrap:wrap;gap:4px}.pool{display:inline-flex;align-items:baseline;gap:4px;background:#f6f8fb;border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:12px;white-space:nowrap}.pool b,.pool i{font-variant-numeric:tabular-nums}.pool i{font-style:normal;color:var(--muted)}.pool em{font-style:normal;color:var(--muted);font-size:11px}.wallet .note{margin-top:7px;font-size:11.5px;line-height:1.6}</style>
 </head>
 <body>
 <div id="login"><div class="login-card"><h2>管理登录</h2><div class="field"><label>管理员密码</label><input id="password" type="password"></div><button class="primary" onclick="login()">登录</button><p id="loginMsg" class="error"></p></div></div>
 <header><div class="brand">PhanthyCode2API<small>管理控制台</small></div><nav><button class="nav-btn active" data-view="dashboard">总览</button><button class="nav-btn" data-view="accounts">账号</button><button class="nav-btn" data-view="keys">密钥</button><button class="nav-btn" data-view="logs">日志</button><button class="nav-btn" data-view="config">设置</button><button onclick="logout()">退出</button></nav></header>
 <main>
 <section id="dashboard"><div class="grid"><div class="stat">账号<b id="stAccounts">-</b></div><div class="stat">分发密钥<b id="stKeys">-</b></div><div class="stat">总请求<b id="stTotal">-</b></div><div class="stat">错误<b id="stErrors">-</b></div></div><div class="card"><h3>最近 30 天请求</h3><div id="chart"></div></div><div class="card"><h3>按密钥统计</h3><table><thead><tr><th>密钥</th><th>请求</th></tr></thead><tbody id="byKey"></tbody></table></div></section>
-<section id="accounts" hidden><div class="card"><div class="row"><button class="primary" onclick="showAccountForm()">添加账号</button><button onclick="loadAccounts()">刷新</button></div><table><thead><tr><th>账号</th><th>状态</th><th>积分</th><th>Token</th><th>操作</th></tr></thead><tbody id="accountRows"></tbody></table></div></section>
+<section id="accounts" hidden><div class="card"><div class="row"><button class="primary" onclick="showAccountForm()">添加账号</button><button onclick="loadAccounts()">刷新</button></div><table><thead><tr><th>账号</th><th>状态</th><th>积分 / 额度池</th><th>Token</th><th>操作</th></tr></thead><tbody id="accountRows"></tbody></table></div></section>
 <section id="keys" hidden><div class="card"><div class="row"><div class="field"><label>名称</label><input id="keyName" value="默认密钥"></div><div class="field"><label>次数上限（0 无限）</label><input id="keyMax" type="number" value="0"></div><button class="primary" onclick="createKey()">创建</button><button onclick="loadKeys()">刷新</button></div><p id="newKeyMsg"></p><table><thead><tr><th>名称</th><th>密钥</th><th>配额</th><th>状态</th><th>操作</th></tr></thead><tbody id="keyRows"></tbody></table></div></section>
 <section id="logs" hidden><div class="card"><div class="row"><button onclick="loadLogs()">刷新</button><button class="danger" onclick="clearLogs()">清空日志</button></div><table><thead><tr><th>时间</th><th>密钥</th><th>账号</th><th>模型</th><th>状态</th><th>耗时</th><th>Tokens</th></tr></thead><tbody id="logRows"></tbody></table></div></section>
 <section id="config" hidden>
@@ -139,7 +139,33 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function dt(v){return v?new Date(v*1000).toLocaleString():'-'}
 async function loadDashboard(){const [stats,accounts,keys]=await Promise.all([api('stats'),api('accounts'),api('keys')]);$('#stAccounts').textContent=accounts.accounts.length;$('#stKeys').textContent=keys.keys.length;$('#stTotal').textContent=stats.total;$('#stErrors').textContent=stats.errors;$('#byKey').innerHTML=Object.entries(stats.by_key).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')||'<tr><td colspan="2" class="muted">暂无数据</td></tr>';const days=Object.entries(stats.daily).sort();const max=Math.max(1,...days.map(x=>x[1]));$('#chart').innerHTML=days.map(([d,v])=>`<div style="display:flex;align-items:center;gap:8px;margin:5px 0"><span class="muted" style="width:78px">${d}</span><div class="bar" style="flex:1"><i style="width:${v/max*100}%"></i></span></span><span style="width:45px;text-align:right">${v}</span></div>`).join('')||'<span class="muted">暂无数据</span>'}
 async function loadAccounts(){const d=await api('accounts');state.accounts=d.accounts;$('#accountRows').innerHTML=d.accounts.map(a=>`<tr><td><b>${esc(a.nickname||a.uid)}</b><div class="muted mono">${esc(a.uid)}</div></td><td>${a.disabled?'<span class="pill off">禁用</span>':a.cooling?'<span class="pill">冷却</span>':'<span class="pill on">健康</span>'}${a.reason?`<div class="muted">${esc(a.reason)}</div>`:''}</td><td>${creditsCell(a)}</td><td>${a.has_api_key?'API key':'Access token'}</td><td><button onclick="accountOp('${esc(a.uid)}','refresh')">刷新</button> <button onclick="accountOp('${esc(a.uid)}','keepalive')">保活</button> <button onclick="accountOp('${esc(a.uid)}','enable')">恢复</button> <button class="danger" onclick="accountOp('${esc(a.uid)}','delete')">删除</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无账号</td></tr>'}
-function creditsCell(a){if(a.credits_error)return '<span class="muted">读取失败</span>';if(a.credits_remaining==null)return '<span class="muted">-</span>';const pct=a.credits_percent==null?'':' '+a.credits_percent+'%';const reset=a.credits_reset_at?'<div class="muted">重置 '+new Date(a.credits_reset_at).toLocaleDateString()+'</div>':'';return '<b>'+esc(a.credits_remaining)+'</b><span class="muted"> / '+esc(a.credits_total)+esc(pct)+'</span>'+reset}
+function num(v){if(v==null)return'0';const n=Number(v);if(!isFinite(n))return String(v);return (Math.round(n*100)/100).toLocaleString('zh-CN')}
+function day(s){if(!s)return'';const d=new Date(s);return isNaN(d)?'':(d.getMonth()+1)+'月'+d.getDate()+'日'}
+function creditsCell(a){
+ if(a.credits_error)return '<span class="muted">读取失败</span>';
+ const pools=Array.isArray(a.wallet_pools)?a.wallet_pools:[];
+ if(!pools.length){
+  if(a.credits_remaining==null)return '<span class="muted">-</span>';
+  const reset=a.credits_reset_at?'<div class="muted">到期 '+day(a.credits_reset_at)+'</div>':'';
+  const pct=a.credits_percent==null?'':' '+a.credits_percent+'%';
+  return '<b>'+num(a.credits_remaining)+'</b><span class="muted"> / '+num(a.credits_total)+esc(pct)+'</span>'+reset;
+ }
+ const total=a.wallet_total||0,left=a.wallet_remaining||0,used=a.wallet_used||0;
+ const pct=total>0?Math.max(0,Math.min(100,left/total*100)):0;
+ const level=pct<=10?'low':pct<=30?'warn':'';
+ const chips=pools.map(p=>{
+  const tip='总额 '+num(p.total)+' · 已用 '+num(p.used)+(p.lots>1?' · '+p.lots+' 批':'')+(p.expires_at?' · 到期 '+day(p.expires_at):'');
+  return '<span class="pool" title="'+esc(tip)+'">'+esc(p.label)+'<b>'+num(p.remaining)+'</b><i>/'+num(p.total)+'</i>'+(p.estimate?'<em>≈</em>':'')+'</span>';
+ }).join('');
+ const expiry=pools.map(p=>p.expires_at).filter(Boolean).sort()[0];
+ const notes=['已用 '+num(used)+(a.wallet_approx?'（估算）':'')];
+ if(expiry)notes.push('最近到期 '+day(expiry));
+ if(a.wallet_pending>0)notes.push('待发放 '+num(a.wallet_pending));
+ return '<div class="wallet"><div class="wallet-head"><b>'+num(left)+'</b><span class="muted">/ '+num(total)+'</span></div>'
+  +'<div class="bar '+level+'"><i style="width:'+pct.toFixed(1)+'%"></i></div>'
+  +'<div class="pools">'+chips+'</div>'
+  +'<div class="muted note">'+notes.join(' · ')+'</div></div>';
+}
 function showAccountForm(){$('#accountMsg').textContent='';$('#accountDialog').showModal()}
 async function makeOAuthURL(){$('#accountMsg').textContent='生成中...';try{const d=await api('accounts?action=oauth-url');$('#oauthURL').value=d.url;$('#accountMsg').textContent='已生成，点击“打开链接”'}catch(e){$('#accountMsg').textContent=e.message}}
 function openOAuthURL(){const url=$('#oauthURL').value.trim();if(url)window.open(url,'_blank')}

@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -192,13 +194,134 @@ var usageCache = struct {
 	items map[string]usageCacheEntry
 }{items: map[string]usageCacheEntry{}}
 
-// accountUsage 查询账号积分，60 秒内复用缓存，避免频繁请求上游。
+// usageCacheTTL 管理页额度缓存时长：刷新一个账号要打 3 个上游接口，缓存久一点才不至于把刷新按成压测。
+const usageCacheTTL = 5 * time.Minute
+
+// rewardLabels 奖励类型 → 官网「套餐」页里的额度池名称。
+var rewardLabels = map[string]string{
+	"daily_login":              "每日登录奖励",
+	"long_task_feedback":       "活动奖励",
+	"token_factory_activation": "代币工厂奖励",
+	"referral_inviter":         "推荐奖励",
+}
+
+// creditLot 是奖励台账里的一批额度，一笔已发放的奖励对应一个批次。
+type creditLot struct {
+	kind      string
+	points    float64
+	used      float64
+	granted   time.Time
+	hasGrant  bool
+	expiry    time.Time
+	hasExpiry bool
+}
+
+// usageDay 是某一天的积分消耗，由用量明细按天汇总而来。
+type usageDay struct {
+	start time.Time
+	end   time.Time
+	cost  float64
+}
+
+// usageByDay 把用量明细按自然日汇总成消耗序列（上游按天聚合，没有更细的时间点）。
+func usageByDay(summary map[string]any) []usageDay {
+	rows, _ := summary["usage_by_day_and_model"].([]any)
+	buckets := map[string]*usageDay{}
+	order := make([]string, 0, len(rows))
+	for _, row := range rows {
+		item, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		date, _ := item["date"].(string)
+		if date == "" {
+			continue
+		}
+		bucket := buckets[date]
+		if bucket == nil {
+			start, err := time.Parse("2006-01-02", date)
+			if err != nil {
+				continue
+			}
+			bucket = &usageDay{start: start.UTC(), end: start.UTC().Add(24 * time.Hour)}
+			buckets[date] = bucket
+			order = append(order, date)
+		}
+		cost, _ := toFloat(item["cost_points"])
+		bucket.cost += cost
+	}
+	days := make([]usageDay, 0, len(order))
+	for _, date := range order {
+		days = append(days, *buckets[date])
+	}
+	return days
+}
+
+// lotOrderKey 给出批次的抵扣顺序：先发放的先扣。
+func lotOrderKey(lot creditLot) time.Time {
+	if lot.hasGrant {
+		return lot.granted
+	}
+	if lot.hasExpiry {
+		return lot.expiry
+	}
+	return time.Time{}
+}
+
+// lotAliveOn 判断批次在某一天是否处于有效期内。
+func lotAliveOn(lot *creditLot, day usageDay) bool {
+	if lot.hasExpiry && !lot.expiry.After(day.start) {
+		return false
+	}
+	if lot.hasGrant && !lot.granted.Before(day.end) {
+		return false
+	}
+	return true
+}
+
+// chargeLots 按「先发放先扣」把每天的消耗摊到当天仍然有效的批次上。
+// 批次过期时没用完的部分直接作废，所以只能用「消耗发生当天还在有效期内」的批次来抵扣；
+// 否则会把早已作废的额度也算成已用，和官网「套餐」页的剩余量对不上。
+func chargeLots(lots []creditLot, days []usageDay) {
+	for _, day := range days {
+		remaining := day.cost
+		for i := range lots {
+			if remaining <= 0 {
+				break
+			}
+			lot := &lots[i]
+			capacity := lot.points - lot.used
+			if capacity <= 0 || !lotAliveOn(lot, day) {
+				continue
+			}
+			take := math.Min(remaining, capacity)
+			lot.used += take
+			remaining -= take
+		}
+	}
+}
+
+// walletPool 是「套餐」页里的一行额度池。
+type walletPool struct {
+	Key       string  `json:"key"`
+	Label     string  `json:"label"`
+	Total     float64 `json:"total"`
+	Remaining float64 `json:"remaining"`
+	Used      float64 `json:"used"`
+	Lots      int     `json:"lots"`
+	ExpiresAt string  `json:"expires_at,omitempty"`
+	Estimate  bool    `json:"estimate,omitempty"`
+}
+
+// accountUsage 汇总账号额度，口径对齐官网「套餐」页：
+// 钱包总额 = 套餐池 + 各奖励池（未过期批次）之和，剩余 = 总额 - 已用。
+// 批次级的扣减账本上游没有公开接口，奖励池的「已用」由用量汇总按先到期先扣还原，因此标记为估算。
 func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
 	if account == nil {
 		return map[string]any{"credits_error": "account not found"}
 	}
 	usageCache.Lock()
-	if entry, ok := usageCache.items[account.UID]; ok && time.Since(entry.at) < time.Minute {
+	if entry, ok := usageCache.items[account.UID]; ok && time.Since(entry.at) < usageCacheTTL {
 		data := entry.data
 		usageCache.Unlock()
 		return data
@@ -212,16 +335,185 @@ func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
 			raw, err = client.FetchUsage(account)
 		}
 	}
-	data := map[string]any{}
 	if err != nil {
-		data["credits_error"] = err.Error()
-	} else {
-		data = extractUsage(raw)
+		return cacheUsage(account.UID, map[string]any{"credits_error": err.Error()})
 	}
+
+	data := extractUsage(raw)
+
+	summary, _ := client.FetchUsageSummary(account)
+	planName := ""
+	if plan, ok := summary["plan"].(map[string]any); ok {
+		planName, _ = plan["name"].(string)
+		if planName != "" {
+			data["credits_plan"] = planName
+		}
+		if expires, _ := plan["expires_at"].(string); expires != "" {
+			data["credits_plan_expires_at"] = expires
+		}
+	}
+	consumed := sumCostPoints(summary)
+	if consumed > 0 {
+		data["credits_consumed"] = consumed
+	}
+
+	rewards, rewardsErr := client.FetchRewards(account)
+	if rewardsErr != nil && len(rewards) == 0 {
+		data["credits_rewards_error"] = rewardsErr.Error()
+	}
+
+	pools, pending := buildWallet(planName, data, rewards, summary)
+	if len(pools) == 0 {
+		if _, ok := data["credits_error"]; !ok {
+			data["credits_error"] = "no usage data"
+		}
+		return cacheUsage(account.UID, data)
+	}
+	total, left, approx := 0.0, 0.0, false
+	for _, pool := range pools {
+		total += pool.Total
+		left += pool.Remaining
+		if pool.Estimate {
+			approx = true
+		}
+	}
+	data["wallet_pools"] = pools
+	data["wallet_total"] = total
+	data["wallet_remaining"] = left
+	data["wallet_used"] = total - left
+	data["wallet_approx"] = approx
+	if pending > 0 {
+		data["wallet_pending"] = pending
+	}
+	return cacheUsage(account.UID, data)
+}
+
+// cacheUsage 写入管理页缓存并返回结果。
+func cacheUsage(uid string, data map[string]any) map[string]any {
 	usageCache.Lock()
-	usageCache.items[account.UID] = usageCacheEntry{data: data, at: time.Now()}
+	usageCache.items[uid] = usageCacheEntry{data: data, at: time.Now()}
 	usageCache.Unlock()
 	return data
+}
+
+// buildWallet 把套餐池与奖励批次整理成「套餐」页的额度池列表。
+// 第二个返回值是 pending 状态的待发放积分（官网同样不计入钱包余额）。
+func buildWallet(planName string, usage map[string]any, rewards []map[string]any, summary map[string]any) ([]walletPool, float64) {
+	pools := make([]walletPool, 0, 4)
+	if remaining, ok := toFloat(usage["credits_remaining"]); ok {
+		total, _ := toFloat(usage["credits_total"])
+		used, _ := toFloat(usage["credits_used"])
+		label := planName
+		if label == "" {
+			label = "套餐额度"
+		}
+		expires, _ := usage["credits_reset_at"].(string)
+		pools = append(pools, walletPool{
+			Key: "plan", Label: label, Total: total, Remaining: remaining, Used: used,
+			Lots: 1, ExpiresAt: expires,
+		})
+	}
+
+	lots := make([]creditLot, 0, len(rewards))
+	pending := 0.0
+	for _, reward := range rewards {
+		points, ok := toFloat(reward["points"])
+		if !ok || points <= 0 {
+			continue
+		}
+		status, _ := reward["status"].(string)
+		if status != "granted" {
+			if status == "pending" {
+				pending += points
+			}
+			continue
+		}
+		kind, _ := reward["reward_type"].(string)
+		if kind == "" {
+			kind = "other"
+		}
+		lot := creditLot{kind: kind, points: points}
+		lot.granted, lot.hasGrant = parseUpstreamTime(reward["granted_at"])
+		lot.expiry, lot.hasExpiry = parseUpstreamTime(reward["expires_at"])
+		lots = append(lots, lot)
+	}
+	if len(lots) == 0 {
+		return pools, pending
+	}
+	sort.SliceStable(lots, func(i, j int) bool {
+		return lotOrderKey(lots[i]).Before(lotOrderKey(lots[j]))
+	})
+	chargeLots(lots, usageByDay(summary))
+
+	now := time.Now()
+	type rewardPool struct {
+		total, used float64
+		lots        int
+		earliest    time.Time
+		hasEarliest bool
+	}
+	groups := map[string]*rewardPool{}
+	order := make([]string, 0, 4)
+	for _, lot := range lots {
+		if lot.hasExpiry && !lot.expiry.After(now) {
+			continue // 已过期批次不再计入钱包
+		}
+		group := groups[lot.kind]
+		if group == nil {
+			group = &rewardPool{}
+			groups[lot.kind] = group
+			order = append(order, lot.kind)
+		}
+		group.total += lot.points
+		group.used += lot.used
+		group.lots++
+		if lot.hasExpiry && (!group.hasEarliest || lot.expiry.Before(group.earliest)) {
+			group.earliest = lot.expiry
+			group.hasEarliest = true
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		left, right := groups[order[i]], groups[order[j]]
+		if !left.hasEarliest {
+			return false
+		}
+		if !right.hasEarliest {
+			return true
+		}
+		return left.earliest.Before(right.earliest)
+	})
+	for _, kind := range order {
+		group := groups[kind]
+		label := rewardLabels[kind]
+		if label == "" {
+			label = kind
+		}
+		pool := walletPool{
+			Key: kind, Label: label, Total: group.total, Lots: group.lots,
+			Used: group.used, Remaining: group.total - group.used, Estimate: true,
+		}
+		if group.hasEarliest {
+			pool.ExpiresAt = group.earliest.UTC().Format(time.RFC3339)
+		}
+		pools = append(pools, pool)
+	}
+	return pools, pending
+}
+
+// sumCostPoints 汇总用量明细里的消耗积分（上游只返回最近一段时间的明细）。
+func sumCostPoints(summary map[string]any) float64 {
+	rows, _ := summary["usage_by_day_and_model"].([]any)
+	total := 0.0
+	for _, row := range rows {
+		item, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		if points, ok := toFloat(item["cost_points"]); ok {
+			total += points
+		}
+	}
+	return total
 }
 
 // extractUsage 从 /api/oauth/usage 响应中取出管理页需要的积分字段。
@@ -242,6 +534,39 @@ func extractUsage(raw map[string]any) map[string]any {
 	out["credits_reset_at"] = plan["resets_at"]
 	out["credits_window"] = plan["window_kind"]
 	return out
+}
+
+// toFloat 兼容 JSON 反序列化后的各种数值类型。
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// parseUpstreamTime 解析上游的 RFC3339 时间字段。
+func parseUpstreamTime(v any) (time.Time, bool) {
+	text, ok := v.(string)
+	if !ok || text == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, text); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 const defaultAdminPassword = "admin123"
