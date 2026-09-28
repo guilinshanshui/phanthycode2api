@@ -37,7 +37,8 @@
 4. 双击 `phanthycode2api.exe`（Windows），或运行 `./phanthycode2api`。
 
    更省事的是双击同目录下的 `start-server.bat`：它会切到程序目录启动，运行日志**既打印在
-   窗口里、又追加写进 `logs\server.out.log`**，忘了截窗口日志也能事后翻文件。
+   窗口里、又追加写进 `logs\server.out.log`**，忘了截窗口日志也能事后翻文件。服务已经在
+   运行时再双击它，只会打开浏览器里的管理页、不会再起一份（避免撞端口）。
 5. 浏览器打开管理页：
 
    ```text
@@ -58,7 +59,7 @@
 重启与开机自启：
 
 - **重启服务**：结束进程再启动即可（Windows 在任务管理器里结束 `phanthycode2api.exe`，Linux / macOS 按 `Ctrl+C` 或 `pkill phanthycode2api`）。管理页「设置」里改的配置、新添加的账号都是重启后生效
-- **Windows 开机自启**：按 `Win + R` 输入 `shell:startup`，把 `start-server.bat` 的**快捷方式**放进打开的文件夹（比直接放 exe 更好：日志会落到 `logs\server.out.log`，崩了也能翻）；想要后台静默运行就用「任务计划程序」新建一个「登录时」触发的任务，程序填 bat 路径、「起始位置」填程序目录
+- **Windows 开机自启**：按 `Win + R` 输入 `shell:startup`，把 `start-server.bat` 的**快捷方式**放进打开的文件夹（比直接放 exe 更好：日志会落到 `logs\server.out.log`，崩了也能翻；服务已在运行时它只打开管理页，不会重复起进程）；想要后台静默运行就用「任务计划程序」新建一个「登录时」触发的任务，程序填 bat 路径、「起始位置」填程序目录
 - **Linux 开机自启**：写一个 systemd 单元（`ExecStart` 指向二进制、`WorkingDirectory` 指向程序目录、`Restart=always`），再 `systemctl enable --now phanthycode2api`
 
 ### 方式二：源码构建
@@ -421,7 +422,7 @@ phanthycode2api/
 │   ├── admin/           # Web 管理台（PBKDF2 登录、账号 / 密钥 / 日志 / 配置）
 │   └── logx/            # 分级日志（debug / info / error）
 ├── config.example.json  # 配置模板
-├── start-server.bat     # Windows 双击启动（切到程序目录、日志落 logs\server.out.log）
+├── start-server.bat     # Windows 双击启动（切到程序目录、日志落 logs\server.out.log、已在运行则只开管理页）
 ├── login.sh             # 半自动 OAuth 登录脚本（包装 cmd/login 两步流程）
 ├── credit.sh            # 账号池状态 / credit 查看
 ├── Dockerfile           # 多阶段构建
