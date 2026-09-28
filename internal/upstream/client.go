@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -51,6 +52,10 @@ func (k ErrKind) String() string {
 		return "none"
 	}
 }
+
+// ErrAPIKeyUnsupported 上游没有 create_api_key 路由，账号只能用 access_token 兜底。
+// 这是上游的固有行为而非故障，调用方不应据此记错误日志。
+var ErrAPIKeyUnsupported = errors.New("create_api_key 不可用（上游 404），改用 access_token")
 
 // Error 带分类的上游错误。
 type Error struct {
@@ -308,9 +313,9 @@ func (c *Client) CreateAPIKey(a *auth.Auth) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		// 404 说明上游根本没有这个路由，标记后不再重试。
-		if resp.StatusCode == http.StatusNotFound {
-			c.apiKeyUnsupported.Store(true)
+		// 404 说明上游根本没有这个路由，标记后不再重试，且只在首次发现时记一条日志。
+		if resp.StatusCode == http.StatusNotFound && c.apiKeyUnsupported.CompareAndSwap(false, true) {
+			log.Printf("upstream: create_api_key 返回 404，后续请求直接改用 access_token 兜底")
 		}
 		kind := Classify(resp.StatusCode, string(raw))
 		return "", &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
@@ -338,6 +343,7 @@ func (c *Client) CreateAPIKey(a *auth.Auth) (string, error) {
 }
 
 // EnsureAPIKey 若账号缺少 api_key 则自动调用 create_api_key 补齐，并原子写回。
+// 上游没有该路由时返回 ErrAPIKeyUnsupported，属预期情况，调用方无需重复记日志。
 func (c *Client) EnsureAPIKey(a *auth.Auth) error {
 	a.Lock()
 	if a.APIKey != "" {
@@ -346,8 +352,7 @@ func (c *Client) EnsureAPIKey(a *auth.Auth) error {
 	}
 	a.Unlock()
 	if c.apiKeyUnsupported.Load() {
-		return &Error{Kind: ErrClient, Status: http.StatusNotFound,
-			Msg: "create_api_key 不可用（上游 404），改用 access_token"}
+		return ErrAPIKeyUnsupported
 	}
 	key, err := c.CreateAPIKey(a)
 	if err != nil {

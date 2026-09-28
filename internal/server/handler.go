@@ -238,7 +238,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// 确保 api_key 可用（失败不阻塞，ChatStream 会用 access_token 兜底）
 		if acct.APIKey == "" {
-			if err := h.cfg.Upstream.EnsureAPIKey(acct); err != nil {
+			// ErrAPIKeyUnsupported 属上游固有行为，已在首次发现时记过日志，这里不再重复。
+			if err := h.cfg.Upstream.EnsureAPIKey(acct); err != nil && !errors.Is(err, upstream.ErrAPIKeyUnsupported) {
 				log.Printf("ensure_api_key uid=%s: %v", acct.UID, err)
 			}
 		}
