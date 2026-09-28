@@ -49,9 +49,20 @@ jobs:
           else
             tar -czf "$dir.tar.gz" "$dir"
           fi
+      - name: Release notes from tag message
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git for-each-ref "refs/tags/$TAG" --format='%(contents:body)' > RELEASE_NOTES.md
+          echo "----------- release notes -----------"
+          cat RELEASE_NOTES.md
+          echo "-------------------------------------"
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             phanthycode2api-*.zip
             phanthycode2api-*.tar.gz
