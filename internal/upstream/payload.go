@@ -24,7 +24,7 @@ type openAIReq struct {
 // openAIMsg 消息体片段。
 type openAIMsg struct {
 	Role       string            `json:"role"`
-	Content    json.RawMessage   `json:"content"`    // string 或 []contentPart
+	Content    json.RawMessage   `json:"content"` // string 或 []contentPart
 	ToolCalls  []json.RawMessage `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
 	Name       string            `json:"name,omitempty"`
@@ -46,22 +46,22 @@ type contentPart struct {
 
 // anthropicReq Anthropic Messages API 请求结构。
 type anthropicReq struct {
-	Model       string         `json:"model"`
-	MaxTokens   int            `json:"max_tokens"`
-	System      string         `json:"system,omitempty"`
-	Messages    []anthropicMsg `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	TopP        *float64       `json:"top_p,omitempty"`
-	Stream      bool           `json:"stream"`
-	Tools       []anthropicTool `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	StopSequences []string     `json:"stop_sequences,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	Model         string            `json:"model"`
+	MaxTokens     int               `json:"max_tokens"`
+	System        string            `json:"system,omitempty"`
+	Messages      []anthropicMsg    `json:"messages"`
+	Temperature   *float64          `json:"temperature,omitempty"`
+	TopP          *float64          `json:"top_p,omitempty"`
+	Stream        bool              `json:"stream"`
+	Tools         []anthropicTool   `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage   `json:"tool_choice,omitempty"`
+	StopSequences []string          `json:"stop_sequences,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 type anthropicMsg struct {
-	Role    string         `json:"role"`
-	Content []contentPart  `json:"content"`
+	Role    string        `json:"role"`
+	Content []contentPart `json:"content"`
 }
 
 type anthropicTool struct {
@@ -101,6 +101,9 @@ var modelSuffixes = []string{"[1m]", "[2m]", ":1m", ":2m"}
 // 内部空白折成 "-"（让 "Kimi K3" 这类展示名落到 kimi-k3）。
 func normalizeModel(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
+	for _, prefix := range []string{"cn:", "global:"} {
+		s = strings.TrimPrefix(s, prefix)
+	}
 	for _, suffix := range modelSuffixes {
 		s = strings.TrimSuffix(s, suffix)
 	}
@@ -234,7 +237,7 @@ func PrepareBody(src []byte) []byte {
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function struct {
-						Name      string         `json:"name"`
+						Name      string          `json:"name"`
 						Arguments json.RawMessage `json:"arguments"`
 					} `json:"function"`
 				}
@@ -452,23 +455,23 @@ func convertToolChoice(raw json.RawMessage) json.RawMessage {
 
 // openAIResp 非流式 OpenAI 响应。
 type openAIResp struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	Model   string   `json:"model"`
 	Choices []choice `json:"choices"`
-	Usage   *usage  `json:"usage,omitempty"`
+	Usage   *usage   `json:"usage,omitempty"`
 }
 
 type choice struct {
-	Index        int            `json:"index"`
-	Message      openAIMessage  `json:"message"`
-	FinishReason string         `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openAIMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type openAIMessage struct {
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
 	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
