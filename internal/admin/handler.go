@@ -20,6 +20,7 @@ type AccountManager struct {
 	Add        func(req map[string]any) error
 	Delete     func(uid string) error
 	Refresh    func(uid string) error
+	Enable     func(uid string) error
 	Keepalive  func(uid string) error
 }
 
@@ -251,6 +252,8 @@ func (h *Handler) accounts(w http.ResponseWriter, r *http.Request, tail []string
 		operationFn = h.Accounts.Delete
 	case "refresh":
 		operationFn = h.Accounts.Refresh
+	case "enable":
+		operationFn = h.Accounts.Enable
 	case "keepalive":
 		operationFn = h.Accounts.Keepalive
 	default:

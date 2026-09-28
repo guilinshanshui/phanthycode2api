@@ -57,9 +57,9 @@ func Default() *Config {
 	c.Admin.Enabled = true
 	c.Admin.DataDir = "./data/admin"
 	c.Cooldown.HardCredit = "12h"
-	c.Cooldown.SoftRate = "60s"
-	c.Cooldown.ErrThresh = 3
-	c.Cooldown.ErrCooldown = "10m"
+	c.Cooldown.SoftRate = "30s"
+	c.Cooldown.ErrThresh = 5
+	c.Cooldown.ErrCooldown = "2m"
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 120
 	return c
@@ -133,7 +133,7 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("cooldown.err_cooldown: %w", err)
 	}
 	if c.Cooldown.ErrThresh <= 0 {
-		c.Cooldown.ErrThresh = 3
+		c.Cooldown.ErrThresh = 5
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120

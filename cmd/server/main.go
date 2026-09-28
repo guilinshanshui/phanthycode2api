@@ -132,6 +132,7 @@ func main() {
 			},
 			Delete:    func(uid string) error { return DeleteAccount(cfg.AuthDir, p, uid) },
 			Refresh:   func(uid string) error { return RefreshAccount(upstream.New(cfg.BaseURL), p, uid) },
+			Enable:    func(uid string) error { p.Enable(uid); return nil },
 			Keepalive: func(uid string) error { return KeepaliveAccount(upstream.New(cfg.BaseURL), p, uid) },
 		}
 	}
