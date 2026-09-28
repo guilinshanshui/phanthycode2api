@@ -141,6 +141,21 @@ async function loadDashboard(){const [stats,accounts,keys]=await Promise.all([ap
 async function loadAccounts(){const d=await api('accounts');state.accounts=d.accounts;$('#accountRows').innerHTML=d.accounts.map(a=>`<tr><td><b>${esc(a.nickname||a.uid)}</b><div class="muted mono">${esc(a.uid)}</div></td><td>${a.disabled?'<span class="pill off">禁用</span>':a.cooling?'<span class="pill">冷却</span>':'<span class="pill on">健康</span>'}${a.reason?`<div class="muted">${esc(a.reason)}</div>`:''}</td><td>${creditsCell(a)}</td><td>${a.has_api_key?'API key':'Access token'}</td><td><button onclick="accountOp('${esc(a.uid)}','refresh')">刷新</button> <button onclick="accountOp('${esc(a.uid)}','keepalive')">保活</button> <button onclick="accountOp('${esc(a.uid)}','enable')">恢复</button> <button class="danger" onclick="accountOp('${esc(a.uid)}','delete')">删除</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无账号</td></tr>'}
 function num(v){if(v==null)return'0';const n=Number(v);if(!isFinite(n))return String(v);return (Math.round(n*100)/100).toLocaleString('zh-CN')}
 function day(s){if(!s)return'';const d=new Date(s);return isNaN(d)?'':(d.getMonth()+1)+'月'+d.getDate()+'日'}
+function dailyLine(d){
+ if(!d||typeof d!=='object')return '';
+ const bits=[];
+ if(d.streak>0)bits.push('连续 '+d.streak+' 天');
+ if(d.total_granted)bits.push('累计 '+num(d.total_granted));
+ const tail=bits.length?'<span class="muted"> · '+esc(bits.join(' · '))+'</span>':'';
+ if(d.granted_today){
+  const tip='开工奖励由上游按北京时间 0 点自动发放'+(d.last_granted_at?'，最近一次 '+d.last_granted_at:'');
+  return '<div class="note" title="'+esc(tip)+'" style="color:#0f766e">开工奖励 <b>今日 +'+num(d.today_points)+'</b>'+tail+'</div>';
+ }
+ if(!d.granted_days)return '<div class="note" title="上游按账号的桌面端安装登记发放，本服务不能代领；该账号目前没有任何开工奖励记录">开工奖励 <span class="muted">暂无记录</span></div>';
+ const dueMs=Date.parse(d.today+'T00:30:00+08:00');
+ if(isFinite(dueMs)&&Date.now()>dueMs)return '<div class="note" title="上游按北京时间 0 点发放，超过 30 分钟仍未到账，建议检查账号是否失效" style="color:#b45309">开工奖励 <b>今日未到账</b>'+tail+'</div>';
+ return '<div class="note" title="上游按北京时间 0 点发放">开工奖励 <span class="muted">今日待发放</span>'+tail+'</div>';
+}
 function creditsCell(a){
  if(a.credits_error)return '<span class="muted">读取失败</span>';
  const pools=Array.isArray(a.wallet_pools)?a.wallet_pools:[];
@@ -164,7 +179,8 @@ function creditsCell(a){
  return '<div class="wallet"><div class="wallet-head"><b>'+num(left)+'</b><span class="muted">/ '+num(total)+'</span></div>'
   +'<div class="bar '+level+'"><i style="width:'+pct.toFixed(1)+'%"></i></div>'
   +'<div class="pools">'+chips+'</div>'
-  +'<div class="muted note">'+notes.join(' · ')+'</div></div>';
+  +'<div class="muted note">'+notes.join(' · ')+'</div>'
+  +dailyLine(a.daily)+'</div>';
 }
 function showAccountForm(){$('#accountMsg').textContent='';$('#accountDialog').showModal()}
 async function makeOAuthURL(){$('#accountMsg').textContent='生成中...';try{const d=await api('accounts?action=oauth-url');$('#oauthURL').value=d.url;$('#accountMsg').textContent='已生成，点击“打开链接”'}catch(e){$('#accountMsg').textContent=e.message}}

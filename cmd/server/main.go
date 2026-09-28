@@ -29,6 +29,7 @@ import (
 	"phanthycode2api/internal/auth"
 	"phanthycode2api/internal/logx"
 	"phanthycode2api/internal/pool"
+	"phanthycode2api/internal/reward"
 	"phanthycode2api/internal/scheduler"
 	"phanthycode2api/internal/server"
 	"phanthycode2api/internal/upstream"
@@ -193,6 +194,12 @@ var usageCache = struct {
 	sync.Mutex
 	items map[string]usageCacheEntry
 }{items: map[string]usageCacheEntry{}}
+
+// dailyRewardSeen 记录每个账号最近提示过的业务日，保证「开工奖励到账」同一天只提示一次。
+var dailyRewardSeen = struct {
+	sync.Mutex
+	days map[string]string
+}{days: map[string]string{}}
 
 // usageCacheTTL 管理页额度缓存时长：刷新一个账号要打 3 个上游接口，缓存久一点才不至于把刷新按成压测。
 const usageCacheTTL = 5 * time.Minute
@@ -361,6 +368,13 @@ func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
 	if rewardsErr != nil && len(rewards) == 0 {
 		data["credits_rewards_error"] = rewardsErr.Error()
 	}
+	// 每日开工奖励由上游按北京时间业务日 0 点自动发放，本项目只做对账与展示。
+	if rewardsErr == nil || len(rewards) > 0 {
+		data["daily"] = reward.Analyze(rewards, time.Now())
+		if daily, ok := data["daily"].(reward.Daily); ok {
+			notifyDailyReward(account, daily)
+		}
+	}
 
 	pools, pending := buildWallet(planName, data, rewards, summary)
 	if len(pools) == 0 {
@@ -394,6 +408,24 @@ func cacheUsage(uid string, data map[string]any) map[string]any {
 	usageCache.items[uid] = usageCacheEntry{data: data, at: time.Now()}
 	usageCache.Unlock()
 	return data
+}
+
+// notifyDailyReward 在每日开工奖励到账时提示一次。
+// 上游没有可调用的领取接口，奖励由服务端按北京时间业务日 0 点自动发放，
+// 这里只做对账提醒，方便在管理台或日志里确认当天是否到账。
+func notifyDailyReward(account *auth.Auth, daily reward.Daily) {
+	if !daily.GrantedToday || daily.Today == "" {
+		return
+	}
+	dailyRewardSeen.Lock()
+	seen := dailyRewardSeen.days[account.UID]
+	dailyRewardSeen.days[account.UID] = daily.Today
+	dailyRewardSeen.Unlock()
+	if seen == daily.Today {
+		return
+	}
+	logx.Infof("开工奖励 %s: %s 已到账 +%.0f 积分（连续 %d 天，累计 %.0f）",
+		account.Nickname, daily.Today, daily.TodayPoints, daily.Streak, daily.TotalGranted)
 }
 
 // buildWallet 把套餐池与奖励批次整理成「套餐」页的额度池列表。
