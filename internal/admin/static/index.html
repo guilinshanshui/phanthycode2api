@@ -21,7 +21,21 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 .pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#eef2f6}.on{color:#166534;background:#dcfce7}.off{color:#991b1b;background:#fee2e2}
 .muted{color:var(--muted)}.error{color:var(--danger)}.mono{font-family:ui-monospace,Consolas,monospace}
 #login{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:10}.login-card{width:min(420px,92vw);background:#fff;padding:24px;border-radius:14px;border:1px solid var(--line)}
-dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::backdrop{background:#0006}.bar{height:10px;background:#eef2f6;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--brand)}
+dialog{border:0;border-radius:14px;width:min(620px,94vw);max-height:min(90vh,860px);padding:0;box-shadow:0 24px 60px rgba(15,23,42,.25);display:none;flex-direction:column;overflow:hidden}
+dialog[open]{display:flex}
+dialog::backdrop{background:rgba(15,23,42,.45)}
+.dlg-head{padding:18px 22px 0}.dlg-head h3{margin:0;font-size:17px}.dlg-head p{margin:6px 0 0;font-size:12.5px;line-height:1.6;color:var(--muted)}
+.dlg-body{display:flex;flex-direction:column;gap:14px;padding:16px 22px;overflow:auto}
+.dlg-body .field{gap:6px}.dlg-body .field label{font-size:12.5px;font-weight:600;color:#374151}
+.dlg-body textarea{width:100%;min-height:60px;height:60px;max-height:132px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.55}
+#oauthURL{height:88px;max-height:160px}
+#authCode{height:56px;max-height:120px}
+.dlg-body textarea:focus,.dlg-body input:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.dlg-steps{margin:0;padding-left:20px;font-size:12.5px;line-height:1.7}.dlg-steps li+li{margin-top:3px}
+.dlg-actions{display:flex;gap:8px;flex-wrap:wrap}
+.dlg-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 22px;background:#fafbfc;border-top:1px solid var(--line)}
+#accountMsg:empty{display:none}
+.bar{height:10px;background:#eef2f6;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--brand)}
 .page-title{margin:0 0 18px}.page-title h2{margin:0;font-size:22px;letter-spacing:-.01em}.page-title p{margin:5px 0 0;color:var(--muted);font-size:13px}
 .settings-card{background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 1px 2px rgba(16,24,40,.04);margin-bottom:18px;overflow:hidden}
 .settings-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 20px;border-bottom:1px solid var(--line)}
@@ -36,7 +50,7 @@ dialog{border:0;border-radius:12px;width:min(560px,92vw);padding:20px}dialog::ba
 .settings-card input:disabled,.settings-card select:disabled{background:#f9fafb;color:var(--muted)}
 .settings-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:20px}
 .settings-actions.sticky{padding:14px 20px;background:#fafbfc;border-top:1px solid var(--line);margin-top:0}
-.msg{font-size:13px;color:var(--muted)}
+.msg{font-size:13px;color:var(--muted)}.msg.error{color:var(--danger)}
 details.raw summary{cursor:pointer;padding:16px 20px;font-weight:600;font-size:14px;color:#374151;list-style:none}
 details.raw summary::-webkit-details-marker{display:none}
 details.raw summary:after{content:"展开";float:right;color:var(--brand);font-weight:500;font-size:13px}
@@ -128,7 +142,20 @@ details.raw[open] summary:after{content:"收起"}
   </div>
 </section>
 </main>
-<dialog id="accountDialog"><h3>添加账号</h3><p class="muted">1. 点击生成授权链接；2. 在浏览器打开并登录；3. 复制成功页面里的 code；4. 粘贴到下方提交。</p><div class="row"><button onclick="makeOAuthURL()">生成授权链接</button><button onclick="openOAuthURL()">打开链接</button></div><div class="field"><label>授权链接</label><textarea id="oauthURL" rows="3"></textarea></div><div class="field"><label>Authorization code</label><textarea id="authCode" rows="4"></textarea></div><div class="row"><button class="primary" onclick="addAccount()">提交授权码</button><button onclick="document.getElementById('accountDialog').close()">取消</button></div><p id="accountMsg"></p></dialog>
+<dialog id="accountDialog">
+  <div class="dlg-head"><h3>添加账号</h3><p>凭据保存在账号目录里，提交成功后会立刻参与调度并自动保活。</p></div>
+  <div class="dlg-body">
+    <ol class="dlg-steps">
+      <li>点「生成授权链接」，再点「打开链接」在浏览器中打开。</li>
+      <li>登录并授权，成功后页面会显示一串授权码。</li>
+      <li>复制授权码粘贴到下面，点「提交授权码」完成添加。</li>
+    </ol>
+    <div class="dlg-actions"><button onclick="makeOAuthURL()">生成授权链接</button><button onclick="openOAuthURL()">打开链接</button></div>
+    <div class="field"><label>授权链接</label><textarea id="oauthURL" rows="2" placeholder="点上方「生成授权链接」自动填入；也可以直接粘贴"></textarea></div>
+    <div class="field"><label>授权码（Authorization code）</label><textarea id="authCode" rows="2" placeholder="粘贴浏览器里显示的 code"></textarea></div>
+  </div>
+  <div class="dlg-foot"><button class="primary" onclick="addAccount()">提交授权码</button><button onclick="document.getElementById('accountDialog').close()">取消</button><span id="accountMsg" class="msg"></span></div>
+</dialog>
 <script>
 const $=s=>document.querySelector(s);let state={keys:[],accounts:[]};
 async function api(path,opts={}){const r=await fetch('/admin/api/'+path,{headers:{'Content-Type':'application/json'},credentials:'same-origin',...opts});if(r.status===401){$('#login').style.display='grid';throw new Error('unauthorized')}const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||r.statusText);return data}
@@ -182,10 +209,11 @@ function creditsCell(a){
   +'<div class="muted note">'+notes.join(' · ')+'</div>'
   +dailyLine(a.daily)+'</div>';
 }
-function showAccountForm(){$('#accountMsg').textContent='';$('#accountDialog').showModal()}
-async function makeOAuthURL(){$('#accountMsg').textContent='生成中...';try{const d=await api('accounts?action=oauth-url');$('#oauthURL').value=d.url;$('#accountMsg').textContent='已生成，点击“打开链接”'}catch(e){$('#accountMsg').textContent=e.message}}
+function accountMsg(text,bad){const el=$('#accountMsg');el.textContent=text||'';el.className='msg'+(bad?' error':'')}
+function showAccountForm(){accountMsg('');$('#accountDialog').showModal()}
+async function makeOAuthURL(){accountMsg('生成中...');try{const d=await api('accounts?action=oauth-url');$('#oauthURL').value=d.url;accountMsg('已生成，点「打开链接」继续授权')}catch(e){accountMsg(e.message,true)}}
 function openOAuthURL(){const url=$('#oauthURL').value.trim();if(url)window.open(url,'_blank')}
-async function addAccount(){$('#accountMsg').textContent='提交中...';try{await api('accounts',{method:'POST',body:JSON.stringify({code:$('#authCode').value.trim()})});$('#accountDialog').close();$('#authCode').value='';$('#oauthURL').value='';loadAccounts()}catch(e){$('#accountMsg').textContent=e.message}}
+async function addAccount(){$('#authCode').value=$('#authCode').value.trim();if(!$('#authCode').value){accountMsg('先粘贴授权码再提交',true);return}accountMsg('提交中...');try{await api('accounts',{method:'POST',body:JSON.stringify({code:$('#authCode').value})});$('#accountDialog').close();$('#authCode').value='';$('#oauthURL').value='';loadAccounts()}catch(e){accountMsg(e.message,true)}}
 async function accountOp(uid,op){if(op==='delete'&&!confirm('确定删除账号 '+uid+'？'))return;try{await api(`accounts/${encodeURIComponent(uid)}/${op}`,{method:'POST'});loadAccounts()}catch(e){alert(e.message)}}
 async function loadKeys(){const d=await api('keys');state.keys=d.keys;$('#keyRows').innerHTML=d.keys.map(k=>`<tr><td>${esc(k.name)}</td><td class="mono">${esc(k.key_preview)}</td><td>${k.used_requests}${k.max_requests?' / '+k.max_requests:' / ∞'}</td><td><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'启用':'禁用'}</span></td><td><button onclick="toggleKey('${k.id}',${!k.enabled})">${k.enabled?'禁用':'启用'}</button> <button class="danger" onclick="deleteKey('${k.id}')">删除</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无密钥</td></tr>'}
 async function createKey(){$('#newKeyMsg').textContent='创建中...';try{const d=await api('keys',{method:'POST',body:JSON.stringify({name:$('#keyName').value,max_requests:+$('#keyMax').value||0})});$('#newKeyMsg').innerHTML='新密钥只显示一次：<b class="mono">'+esc(d.key)+'</b>';loadKeys()}catch(e){$('#newKeyMsg').textContent=e.message}}
