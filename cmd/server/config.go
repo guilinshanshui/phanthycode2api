@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"phanthycode2api/internal/upstream"
 )
 
 // Config 顶层配置。
@@ -39,6 +41,14 @@ type Config struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	// Thinking 扩展思考策略。
+	// 上游在缺省时会自行开启思考，首字延迟会从 1~2 秒涨到 10 秒以上，
+	// 所以这里默认关闭，需要更强推理时再改成 auto / on。
+	Thinking struct {
+		Mode         string `json:"mode"`          // off | auto | on，默认 off
+		BudgetTokens int    `json:"budget_tokens"` // 默认 4096
+	} `json:"thinking"`
+
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
@@ -62,6 +72,8 @@ func Default() *Config {
 	c.Cooldown.ErrCooldown = "2m"
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 120
+	c.Thinking.Mode = "off"
+	c.Thinking.BudgetTokens = upstream.DefaultThinkingBudget
 	return c
 }
 
@@ -119,6 +131,14 @@ func applyEnv(c *Config) {
 			c.Upstream.TimeoutSeconds = n
 		}
 	}
+	if v := os.Getenv("P2A_THINKING_MODE"); v != "" {
+		c.Thinking.Mode = v
+	}
+	if v := os.Getenv("P2A_THINKING_BUDGET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Thinking.BudgetTokens = n
+		}
+	}
 }
 
 func (c *Config) normalize() error {
@@ -149,5 +169,16 @@ func (c *Config) normalize() error {
 	if !strings.HasPrefix(c.Listen, ":") && !strings.Contains(c.Listen, ":") {
 		c.Listen = ":" + c.Listen
 	}
+	normalizedThinking := c.ThinkingOption().Normalize()
+	c.Thinking.Mode = string(normalizedThinking.Mode)
+	c.Thinking.BudgetTokens = normalizedThinking.Budget
 	return nil
+}
+
+// ThinkingOption 把配置转成 upstream 使用的思考策略。
+func (c *Config) ThinkingOption() upstream.ThinkingOption {
+	return upstream.ThinkingOption{
+		Mode:   upstream.ThinkingMode(strings.ToLower(strings.TrimSpace(c.Thinking.Mode))),
+		Budget: c.Thinking.BudgetTokens,
+	}
 }

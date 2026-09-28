@@ -13,7 +13,7 @@ import (
 
 // anthroEvent Anthropic SSE 事件通用结构（使用 map 避免字段名冲突）。
 type anthroEvent struct {
-	Type    string                 `json:"type"`
+	Type    string                     `json:"type"`
 	Raw     map[string]json.RawMessage `json:"-"`
 	Message *struct {
 		ID    string `json:"id"`
@@ -23,7 +23,7 @@ type anthroEvent struct {
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 	} `json:"message,omitempty"`
-	Index       int  `json:"index"`
+	Index        int `json:"index"`
 	ContentBlock *struct {
 		Type  string `json:"type"`
 		Text  string `json:"text"`
@@ -50,7 +50,7 @@ type anthroEvent struct {
 // parseAnthroEvent 解析 Anthropic SSE 事件，正确处理 message_delta 的 delta 字段。
 func parseAnthroEvent(raw []byte) *anthroEvent {
 	var ev struct {
-		Type string `json:"type"`
+		Type string                     `json:"type"`
 		Rest map[string]json.RawMessage `json:"-"`
 	}
 	if err := json.Unmarshal(raw, &ev); err != nil {
@@ -101,21 +101,24 @@ func getUsage(raw []byte) (int, int) {
 
 // streamState 流式转换状态。
 type streamState struct {
-	id       string
-	model    string
-	gotRole  bool
-	textBuf  strings.Builder
-	toolBufs map[int]*toolAccum // index → tool 累积
-	toolSeq  []int
-	usageIn  int
-	usageOut int
-	stopReason string
+	id      string
+	model   string
+	gotRole bool
+	textBuf strings.Builder
+	// thinkingBuf 单独累积上游思考内容。它属于推理过程，不能混进正文，
+	// 否则非流式调用方会把思考片段当成答案。
+	thinkingBuf strings.Builder
+	toolBufs    map[int]*toolAccum // index → tool 累积
+	toolSeq     []int
+	usageIn     int
+	usageOut    int
+	stopReason  string
 }
 
 type toolAccum struct {
-	id         string
-	name       string
-	args       strings.Builder
+	id   string
+	name string
+	args strings.Builder
 }
 
 // Stream 将上游 Anthropic SSE 流实时转换为 OpenAI SSE 流写回 w。
@@ -327,7 +330,19 @@ func Aggregate(r io.Reader, modelOverride string) (map[string]any, error) {
 	if modelOverride != "" {
 		st.model = modelOverride
 	}
-	return BuildOpenAIResponse(st.id, st.model, "assistant", msg.Content, finish, msg.ToolCalls, u), nil
+	resp := BuildOpenAIResponse(st.id, st.model, "assistant", msg.Content, finish, msg.ToolCalls, u)
+	if reasoning := st.thinkingBuf.String(); reasoning != "" {
+		// 推理过程与流式路径保持一致：单独放在 reasoning_content，
+		// 不混进 content，避免调用方把思考片段当成答案展示。
+		if choices, ok := resp["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if message, ok := choice["message"].(map[string]any); ok {
+					message["reasoning_content"] = reasoning
+				}
+			}
+		}
+	}
+	return resp, nil
 }
 
 func collectEvent(st *streamState, ev *anthroEvent, raw string) {
@@ -364,7 +379,7 @@ func collectEvent(st *streamState, ev *anthroEvent, raw string) {
 		case "text_delta":
 			st.textBuf.WriteString(ev.Delta.Text)
 		case "thinking_delta":
-			st.textBuf.WriteString(ev.Delta.Thinking)
+			st.thinkingBuf.WriteString(ev.Delta.Thinking)
 		case "input_json_delta":
 			idx := ev.Index
 			if acc, ok := st.toolBufs[idx]; ok && ev.Delta.PartialJSON != "" {

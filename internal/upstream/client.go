@@ -4,12 +4,14 @@ package upstream
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"phanthycode2api/internal/auth"
@@ -135,6 +137,10 @@ type Client struct {
 	UsageURL        string // {Base}/api/oauth/usage
 	ClientID        string // phanthy-code-cli
 	OAuthBetaHeader string // oauth-2025-04-20
+
+	// apiKeyUnsupported 记录上游是否已确认没有 create_api_key 路由。
+	// 线上该接口固定 404，每次请求都试一遍等于白跑一次往返并刷一条错误日志。
+	apiKeyUnsupported atomic.Bool
 }
 
 // New 生产默认值。配置连接池减少 TLS 握手。
@@ -302,6 +308,10 @@ func (c *Client) CreateAPIKey(a *auth.Auth) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
+		// 404 说明上游根本没有这个路由，标记后不再重试。
+		if resp.StatusCode == http.StatusNotFound {
+			c.apiKeyUnsupported.Store(true)
+		}
 		kind := Classify(resp.StatusCode, string(raw))
 		return "", &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
 	}
@@ -335,6 +345,10 @@ func (c *Client) EnsureAPIKey(a *auth.Auth) error {
 		return nil
 	}
 	a.Unlock()
+	if c.apiKeyUnsupported.Load() {
+		return &Error{Kind: ErrClient, Status: http.StatusNotFound,
+			Msg: "create_api_key 不可用（上游 404），改用 access_token"}
+	}
 	key, err := c.CreateAPIKey(a)
 	if err != nil {
 		return err
@@ -351,9 +365,11 @@ func (c *Client) EnsureAPIKey(a *auth.Auth) error {
 // ChatStream 发 chat 请求并返回原始 SSE body 流（调用方负责 Close）。
 // 非 2xx 时 rc 为 nil、body 为上游响应体、err 为 nil；只有传输层失败才返回 err。
 // 认证方式：优先 api_key（x-api-key），其次 access_token（Bearer）。
-func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
+// ctx 贯穿到上游连接：下游客户端取消请求（例如用户中断）时立即释放上游连接，
+// 避免继续占用账号配额和在途连接。
+func (c *Client) ChatStream(ctx context.Context, a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	url := c.BaseAPIURL + "/v1/messages"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, nil, err
 	}

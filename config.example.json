@@ -16,6 +16,10 @@
   "upstream": {
     "timeout_seconds": 120
   },
+  "thinking": {
+    "mode": "off",
+    "budget_tokens": 4096
+  },
   "admin": {
     "enabled": true,
     "password_hash": "",

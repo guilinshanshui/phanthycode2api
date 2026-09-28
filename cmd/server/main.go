@@ -153,6 +153,7 @@ func main() {
 		ErrThreshold: cfg.Cooldown.ErrThresh,
 		ErrCooldown:  cfg.ErrCooldownDur,
 		Admin:        adminHandler,
+		Thinking:     cfg.ThinkingOption(),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -171,7 +172,8 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("phanthycode2api listening on %s (api_key=%v, admin=%v)", cfg.Listen, cfg.APIKey != "", adminHandler != nil)
+	log.Printf("phanthycode2api listening on %s (api_key=%v, admin=%v, thinking=%s)",
+		cfg.Listen, cfg.APIKey != "", adminHandler != nil, cfg.ThinkingOption().Normalize().Mode)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}

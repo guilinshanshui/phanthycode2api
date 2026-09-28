@@ -15,6 +15,8 @@
 - ⏰ **定时 keepalive** — 保持 token 活跃，接近过期时自动刷新
 - 🗺 **模型映射** — 模型名统一归一化（大小写、空白、`[1m]` 上下文后缀），历史商业名自动映射到当前公开模型 ID
 - 🛡 **模型不可用不误伤账号** — 套餐未开放的模型返回 `400 model_not_allowed`，不计错误、不触发冷却
+- ⚡ **显式思考开关** — 上游缺省会自行开启扩展思考（首字 10 秒+），本服务总是显式下发 `thinking`，默认关闭，可切 `auto`/`on`
+- 🧵 **请求上下文透传** — 下游取消请求时立即释放上游连接
 - 🏗 **Go 单二进制** — 无第三方依赖，`go build` 即得
 
 ## 快速开始
@@ -80,13 +82,9 @@ curl -s http://localhost:7864/healthz
 http://127.0.0.1:7864/admin
 ```
 
-默认密码为 `admin123`。首次登录后请在 `config.json` 中设置强密码：
+默认密码为 `admin123`。登录后在 **设置 → 管理员密码** 里直接改即可，下次登录生效。
 
-```bash
-go run ./cmd/hash-password -password=你的强密码
-```
-
-把输出写入：
+也可以在命令行用 `go run ./cmd/hash-password -password=你的强密码` 生成 PBKDF2 哈希后写回 `config.json`：
 
 ```json
 "admin": {
@@ -101,7 +99,7 @@ go run ./cmd/hash-password -password=你的强密码
 - 账号管理：生成 OAuth 授权链接、提交授权码、删除账号、手动刷新和保活
 - 密钥分发：每个下游独立密钥、独立次数上限、模型白名单
 - 请求日志与统计
-- 图形化编辑常用配置（API Key、目录、上游地址、超时、冷却与保活），并提供原始 JSON 高级编辑
+- 图形化编辑常用配置（API Key、目录、上游地址、超时、思考模式与预算、冷却与保活），并提供原始 JSON 高级编辑
 
 ## 配置说明
 
@@ -124,6 +122,10 @@ go run ./cmd/hash-password -password=你的强密码
   "upstream": {
     "timeout_seconds": 120
   },
+  "thinking": {
+    "mode": "off",
+    "budget_tokens": 4096
+  },
   "admin": {
     "enabled": true,
     "password_hash": "***",
@@ -145,9 +147,35 @@ go run ./cmd/hash-password -password=你的强密码
 | `cooldown.err_cooldown` | `P2A_ERR_COOLDOWN` | `10m` | 错误冷却时长 |
 | `schedule.keepalive_hours` | — | `[22]` | 定时 keepalive 小时 |
 | `upstream.timeout_seconds` | `P2A_TIMEOUT_SECONDS` | `120` | 上游请求超时 |
+| `thinking.mode` | `P2A_THINKING_MODE` | `off` | 扩展思考策略：`off` / `auto` / `on` |
+| `thinking.budget_tokens` | `P2A_THINKING_BUDGET` | `4096` | 思考预算（token，1024–16384），仅 `auto` / `on` 生效 |
 | `admin.enabled` | — | `true` | 是否启用 `/admin` Web 管理界面 |
 | `admin.password_hash` | — | `""` | PBKDF2 管理密码哈希，空则使用默认密码 `admin123` |
 | `admin.data_dir` | — | `./data/admin` | 管理数据目录 |
+
+### 思考模式（响应速度）
+
+上游在请求里**不带** `thinking` 字段时会自行开启扩展思考，正文首字延迟从 1~2 秒涨到 10 秒以上，
+`max_tokens` 偏小时还会出现「预算全花在思考上、正文为空」。因此本服务总是显式下发该字段，
+取值由 `thinking` 配置决定：
+
+| `thinking.mode` | 行为 | 适用场景 |
+|---|---|---|
+| `off`（默认） | 始终下发 `{"type":"disabled"}` | 日常编码，追求首字速度 |
+| `auto` | 读客户端推理档位：`none` / `minimal` / `low` 或未声明 → 关闭，`medium` 及以上 → 开启 | 想让客户端自己决定 |
+| `on` | 始终开启，预算取 `thinking.budget_tokens` | 复杂推理 |
+
+开启思考时，若客户端给的 `max_tokens` 不大于预算，会自动抬到 `budget_tokens + 1024`，
+避免上游直接报参数错误。
+
+以 Codex 接本服务为例，在 `~/.codex/config.toml` 里写：
+
+```toml
+model = "deepseek-v4.1-flash"
+model_reasoning_effort = "low"
+```
+
+再把管理页的思考模式设为 `auto`，就能让低推理档位的请求自动走最快路径。
 
 ### 可用模型
 
@@ -190,6 +218,10 @@ go run ./cmd/hash-password -password=你的强密码
 
 OpenAI 兼容。支持 `stream`（SSE 流式）、`max_tokens`、`temperature`、`top_p`，以及
 `tools` / `tool_choice`（函数调用，含 `none`/`auto`/`required` 三种字符串形式）与 `stop`。
+请求体上限 32 MB，超出返回 `413 request_too_large`。
+
+客户端声明的推理档位（Codex 的 `reasoning_effort`，或 OpenAI 新格式的 `reasoning.effort`）会被读取，
+用于 `thinking.mode = auto` 时判断是否开启思考；其余模式下该字段仅作参考，不下发给上游。
 
 ### `GET /v1/models`
 
@@ -287,7 +319,7 @@ phanthycode2api/
 ├── internal/
 │   ├── auth/            # 账号解析（三种形态）+ 原子写入
 │   ├── pool/            # 账号池状态机（冷却、禁用、错误计数阈值）
-│   ├── upstream/        # 核心：OpenAI ↔ Anthropic 协议转换 + SSE 流式转换
+│   ├── upstream/        # 核心：OpenAI ↔ Anthropic 协议转换 + 思考开关 + SSE 流式转换
 │   ├── server/          # OpenAI 兼容 HTTP 服务器，带轮转与错误分类 + 鉴权中间件
 │   └── scheduler/       # 定时 keepalive 任务
 ├── config.example.json  # 配置模板

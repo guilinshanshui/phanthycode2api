@@ -17,14 +17,14 @@ func TestPrepareBody_Basic(t *testing.T) {
 		],
 		"temperature": 0.5
 	}`
-	out := PrepareBody([]byte(in))
+	out := PrepareBody([]byte(in), ThinkingOption{Mode: ThinkingOff})
 
 	var parsed struct {
-		Model       string          `json:"model"`
-		MaxTokens   int             `json:"max_tokens"`
-		System      string          `json:"system"`
-		Stream      bool            `json:"stream"`
-		Temperature float64         `json:"temperature"`
+		Model       string  `json:"model"`
+		MaxTokens   int     `json:"max_tokens"`
+		System      string  `json:"system"`
+		Stream      bool    `json:"stream"`
+		Temperature float64 `json:"temperature"`
 		Messages    []struct {
 			Role    string `json:"role"`
 			Content []struct {
@@ -67,10 +67,10 @@ func TestPrepareBody_Tools(t *testing.T) {
 		}],
 		"tool_choice": {"type": "function", "function": {"name": "get_weather"}}
 	}`
-	out := PrepareBody([]byte(in))
+	out := PrepareBody([]byte(in), ThinkingOption{Mode: ThinkingOff})
 
 	var parsed struct {
-		Tools      []struct {
+		Tools []struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 			InputSchema any    `json:"input_schema"`
@@ -102,7 +102,7 @@ func TestPrepareBody_ToolChoiceStrings(t *testing.T) {
 	}
 	for in, want := range cases {
 		body := []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}],"tool_choice":` + in + `}`)
-		out := PrepareBody(body)
+		out := PrepareBody(body, ThinkingOption{Mode: ThinkingOff})
 		var parsed struct {
 			ToolChoice json.RawMessage `json:"tool_choice"`
 		}
@@ -128,7 +128,7 @@ func TestPrepareBody_ToolResults(t *testing.T) {
 			{"role": "tool", "tool_call_id": "call_1", "content": "Sunny"}
 		]
 	}`
-	out := PrepareBody([]byte(in))
+	out := PrepareBody([]byte(in), ThinkingOption{Mode: ThinkingOff})
 
 	var parsed struct {
 		Messages []struct {
@@ -161,7 +161,7 @@ func TestPrepareBody_ToolResults(t *testing.T) {
 func BenchmarkPrepareBody(b *testing.B) {
 	in := []byte(`{"model":"claude-sonnet-4-6","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	for i := 0; i < b.N; i++ {
-		_ = PrepareBody(in)
+		_ = PrepareBody(in, ThinkingOption{Mode: ThinkingOff})
 	}
 }
 
@@ -258,6 +258,152 @@ func TestNormalizeModel(t *testing.T) {
 	for in, want := range cases {
 		if got := normalizeModel(in); got != want {
 			t.Errorf("normalizeModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// --- 扩展思考（extended thinking）策略 ---
+
+// thinkingOf 解析 PrepareBody 输出里的 thinking 字段。
+func thinkingOf(t *testing.T, out []byte) anthropicThinking {
+	t.Helper()
+	var parsed struct {
+		Thinking *anthropicThinking `json:"thinking"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v (out=%s)", err, out)
+	}
+	if parsed.Thinking == nil {
+		t.Fatalf("payload 未下发 thinking 字段：%s", out)
+	}
+	return *parsed.Thinking
+}
+
+// TestPrepareBody_ThinkingAlwaysExplicit 锁死「永远显式下发 thinking」这一前提。
+// 上游收不到该字段时会自行开启思考，首字延迟从 1~2 秒涨到 10 秒以上。
+func TestPrepareBody_ThinkingAlwaysExplicit(t *testing.T) {
+	in := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`)
+	for _, opt := range []ThinkingOption{
+		{Mode: ThinkingOff},
+		{Mode: ThinkingOn},
+		{Mode: ThinkingAuto},
+		{},
+	} {
+		if got := thinkingOf(t, PrepareBody(in, opt)); got.Type != "disabled" && got.Type != "enabled" {
+			t.Errorf("option %+v: thinking.type = %q, want disabled/enabled", opt, got.Type)
+		}
+	}
+}
+
+// TestPrepareBody_ThinkingAuto 覆盖「客户端档位 -> 思考开关」的映射。
+func TestPrepareBody_ThinkingAuto(t *testing.T) {
+	cases := []struct {
+		name   string
+		effort string
+		nested bool
+		want   string
+	}{
+		{name: "未声明档位", effort: "", want: "disabled"},
+		{name: "none", effort: "none", want: "disabled"},
+		{name: "minimal", effort: "minimal", want: "disabled"},
+		{name: "low", effort: "low", want: "disabled"},
+		{name: "medium", effort: "medium", want: "enabled"},
+		{name: "high", effort: "high", want: "enabled"},
+		{name: "大写档位归一化", effort: "HIGH", want: "enabled"},
+		{name: "嵌套 reasoning.effort", effort: "high", nested: true, want: "enabled"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := `{"model":"m","messages":[{"role":"user","content":"hi"}]`
+			if c.effort != "" {
+				if c.nested {
+					body += `,"reasoning":{"effort":"` + c.effort + `"}`
+				} else {
+					body += `,"reasoning_effort":"` + c.effort + `"`
+				}
+			}
+			body += `}`
+			got := thinkingOf(t, PrepareBody([]byte(body), ThinkingOption{Mode: ThinkingAuto, Budget: 2048}))
+			if got.Type != c.want {
+				t.Errorf("effort=%q -> thinking.type = %q, want %q", c.effort, got.Type, c.want)
+			}
+		})
+	}
+}
+
+// TestPrepareBody_ThinkingAutoTopLevelWins 顶层 reasoning_effort 优先于嵌套字段。
+func TestPrepareBody_ThinkingAutoTopLevelWins(t *testing.T) {
+	body := []byte(`{"model":"m","reasoning_effort":"low","reasoning":{"effort":"high"},"messages":[]}`)
+	if got := thinkingOf(t, PrepareBody(body, ThinkingOption{Mode: ThinkingAuto})); got.Type != "disabled" {
+		t.Errorf("thinking.type = %q, want disabled（顶层 low 应覆盖嵌套 high）", got.Type)
+	}
+}
+
+// TestPrepareBody_ThinkingOnBudget 开启思考时必须带预算，且 max_tokens 要大于预算。
+func TestPrepareBody_ThinkingOnBudget(t *testing.T) {
+	in := []byte(`{"model":"m","max_tokens":1000,"messages":[{"role":"user","content":"hi"}]}`)
+	out := PrepareBody(in, ThinkingOption{Mode: ThinkingOn, Budget: 4096})
+	got := thinkingOf(t, out)
+	if got.Type != "enabled" || got.BudgetTokens != 4096 {
+		t.Fatalf("thinking = %+v, want enabled/4096", got)
+	}
+	var parsed struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	_ = json.Unmarshal(out, &parsed)
+	if parsed.MaxTokens <= got.BudgetTokens {
+		t.Errorf("max_tokens = %d 必须大于 thinking.budget_tokens = %d，否则上游报参数错误",
+			parsed.MaxTokens, got.BudgetTokens)
+	}
+}
+
+// TestPrepareBody_ThinkingOffOmitsBudget 关闭思考时不带预算，避免上游误读。
+func TestPrepareBody_ThinkingOffOmitsBudget(t *testing.T) {
+	out := PrepareBody([]byte(`{"model":"m","messages":[]}`), ThinkingOption{Mode: ThinkingOff, Budget: 4096})
+	if !strings.Contains(string(out), `"thinking":{"type":"disabled"}`) {
+		t.Errorf("thinking 应为 {\"type\":\"disabled\"}，实际输出：%s", out)
+	}
+}
+
+// TestPrepareBody_MaxTokensFallback 未给 max_tokens 时补默认值，超大值截到上限。
+func TestPrepareBody_MaxTokensFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"缺省补默认值", `{"model":"m","messages":[]}`, defaultMaxTokens},
+		{"合法值透传", `{"model":"m","max_tokens":2048,"messages":[]}`, 2048},
+		{"超大值截断", `{"model":"m","max_tokens":100000,"messages":[]}`, maxMaxTokens},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var parsed struct {
+				MaxTokens int `json:"max_tokens"`
+			}
+			_ = json.Unmarshal(PrepareBody([]byte(c.in), ThinkingOption{Mode: ThinkingOff}), &parsed)
+			if parsed.MaxTokens != c.want {
+				t.Errorf("max_tokens = %d, want %d", parsed.MaxTokens, c.want)
+			}
+		})
+	}
+}
+
+// TestThinkingOptionNormalize 非法或越界配置回落到安全值。
+func TestThinkingOptionNormalize(t *testing.T) {
+	cases := []struct {
+		in   ThinkingOption
+		want ThinkingOption
+	}{
+		{ThinkingOption{Mode: "bogus"}, ThinkingOption{Mode: ThinkingOff, Budget: DefaultThinkingBudget}},
+		{ThinkingOption{Mode: ThinkingOff}, ThinkingOption{Mode: ThinkingOff, Budget: DefaultThinkingBudget}},
+		{ThinkingOption{Mode: ThinkingOn, Budget: 10}, ThinkingOption{Mode: ThinkingOn, Budget: DefaultThinkingBudget}},
+		{ThinkingOption{Mode: ThinkingAuto, Budget: 999999}, ThinkingOption{Mode: ThinkingAuto, Budget: maxThinkingBudget}},
+		{ThinkingOption{Mode: ThinkingAuto, Budget: 4096}, ThinkingOption{Mode: ThinkingAuto, Budget: 4096}},
+	}
+	for _, c := range cases {
+		if got := c.in.Normalize(); got != c.want {
+			t.Errorf("%+v.Normalize() = %+v, want %+v", c.in, got, c.want)
 		}
 	}
 }

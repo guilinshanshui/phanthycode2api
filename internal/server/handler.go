@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -18,18 +19,23 @@ import (
 	"phanthycode2api/internal/upstream"
 )
 
+// maxBodyBytes 单次请求体上限。
+// Codex 在大上下文下会发送数 MB 的会话历史，上限给足并显式报错，避免静默截断。
+const maxBodyBytes = 32 << 20
+
 // Config handler 依赖。
 type Config struct {
 	Pool         *pool.Pool
 	Upstream     *upstream.Client
-	APIKey       string         // 空 = 不鉴权
-	MaxRotate    int            // 单请求最多换号次数，默认 3
-	HardCooldown time.Duration  // 积分不足冷却，默认 12h
-	SoftCooldown time.Duration  // 429 冷却，默认 60s
-	ErrThreshold int            // 连续其他错误冷却阈值，默认 3
-	ErrCooldown  time.Duration  // 错误冷却时长，默认 10m
-	Admin        *admin.Handler // 可空；非空时启用 /admin 与分发密钥
-	RefreshSkew  time.Duration  // token 提前刷新窗口，默认 10m
+	APIKey       string                  // 空 = 不鉴权
+	MaxRotate    int                     // 单请求最多换号次数，默认 2
+	HardCooldown time.Duration           // 积分不足冷却，默认 12h
+	SoftCooldown time.Duration           // 429 冷却，默认 60s
+	ErrThreshold int                     // 连续其他错误冷却阈值，默认 3
+	ErrCooldown  time.Duration           // 错误冷却时长，默认 10m
+	Admin        *admin.Handler          // 可空；非空时启用 /admin 与分发密钥
+	RefreshSkew  time.Duration           // token 提前刷新窗口，默认 10m
+	Thinking     upstream.ThinkingOption // 扩展思考策略，见 upstream.ThinkingOption
 }
 
 // Handler 主路由。
@@ -41,7 +47,9 @@ type Handler struct {
 // NewHandler 构建 handler。
 func NewHandler(cfg Config) *Handler {
 	if cfg.MaxRotate <= 0 {
-		cfg.MaxRotate = 3
+		// 单请求最多换号两次：上游超时类失败重试很少成功，
+		// 换号次数过多只会把尾部等待时间成倍拉长。
+		cfg.MaxRotate = 2
 	}
 	if cfg.HardCooldown <= 0 {
 		cfg.HardCooldown = 12 * time.Hour
@@ -181,9 +189,19 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		return
+	}
+	if len(body) == 0 {
+		// 探测类空请求（部分启动器会这样探活）不必打扰上游。
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "empty request body")
+		return
+	}
+	if len(body) > maxBodyBytes {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+			fmt.Sprintf("request body exceeds %d MB", maxBodyBytes>>20))
 		return
 	}
 
@@ -221,14 +239,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 确保 api_key 可用（失败不阻塞，ChatStream 会用 access_token 兜底）
 		if acct.APIKey == "" {
 			if err := h.cfg.Upstream.EnsureAPIKey(acct); err != nil {
-				log.Printf("ensure_api_key uid=%s: %v (will try access_token)", acct.UID, err)
+				log.Printf("ensure_api_key uid=%s: %v", acct.UID, err)
 			}
 		}
 
-		// 准备请求体（OpenAI → Anthropic 转换）
-		anthroBody := upstream.PrepareBody(body)
+		// 准备请求体（OpenAI → Anthropic 转换，并按配置下发 thinking 开关）
+		anthroBody := upstream.PrepareBody(body, h.cfg.Thinking)
 
-		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(acct, anthroBody)
+		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(r.Context(), acct, anthroBody)
 		if terr != nil {
 			lastErr = terr
 			h.cfg.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
@@ -314,11 +332,13 @@ func peekRequest(r *http.Request) (string, bool) {
 	if r == nil || r.Body == nil {
 		return "", false
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// 一次性读完并缓存：只读开头一段会把大请求体截断成非法 JSON，
+	// 而截断后的 JSON 正是上游 400「Request body must be JSON.」的来源。
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	r.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
 		return "", false
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
 	var payload struct {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
