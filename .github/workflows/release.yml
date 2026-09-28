@@ -44,8 +44,8 @@ jobs:
           mkdir "$dir"
           cp phanthycode2api${{ matrix.ext }} "$dir/"
           cp README.md config.example.json "$dir/"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            7z a "$dir.zip" "$dir"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -r "$dir.zip" "$dir"
           else
             tar -czf "$dir.tar.gz" "$dir"
           fi
