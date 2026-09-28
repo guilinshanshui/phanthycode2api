@@ -165,6 +165,22 @@ func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 	return best.a
 }
 
+// HealthyCount 返回当前可挑选的健康账号数（不含冷却/禁用）。
+// 用于「模型被拒时换号重试」的预算：上游拒绝是秒回，把健康账号都试一遍
+// 的代价极低，比拿单个账号的结果断定套餐不含该模型准确得多。
+func (p *Pool) HealthyCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	n := 0
+	for _, e := range p.byUID {
+		if e.healthy(now) {
+			n++
+		}
+	}
+	return n
+}
+
 // Cooldown 冷却账号至 now+d。
 func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason string) {
 	p.mu.Lock()

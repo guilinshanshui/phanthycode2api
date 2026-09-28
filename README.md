@@ -14,7 +14,7 @@
 - 🔓 **OAuth 登录** — 半自动 PKCE 授权码流程，一键获取凭证
 - ⏰ **定时 keepalive** — 保持 token 活跃，接近过期时自动刷新
 - 🗺 **模型映射** — 模型名统一归一化（大小写、空白、`[1m]` 上下文后缀），历史商业名自动映射到当前公开模型 ID
-- 🛡 **模型不可用不误伤账号** — 套餐未开放的模型返回 `400 model_not_allowed`，不计错误、不触发冷却
+- 🛡 **模型被拒自动换号** — 上游拒绝某模型（套餐差异 / 阵发性风控）时换健康账号重试，不计错误、不触发冷却；全被拒才返回 `400 model_not_allowed`
 - ⚡ **显式思考开关** — 上游缺省会自行开启扩展思考（首字 10 秒+），本服务总是显式下发 `thinking`，默认关闭，可切 `auto`/`on`
 - 📋 **分级日志** — `debug` / `info` / `error` 三档，默认每个请求一行摘要（含账号、模型、状态、耗时、token），排障时切 `debug` 看换号细节
 - 💠 **额度池视图** — 管理页按官网「套餐」页口径展示钱包总额与分池（套餐池 + 每日登录 / 活动等奖励池），过期批次自动剔除
@@ -243,14 +243,23 @@ model_reasoning_effort = "low"
 | `kimi-k2.7-code` | 256K | 日常任务 |
 | `deepseek-v4.1-flash` | 1M | 日常任务 |
 
-**可用性取决于账户套餐**：上游对未开放的模型有两种拒绝姿势，都会被本服务识别：
+**模型被拒时先换号重试**：上游的「模型服务不可用」既可能来自套餐差异，也会
+按账号阵发性出现——实测同一个账号同一个模型，5 分钟前被拒（`tokens=0/0`）、
+之后又正常。所以本服务不会拿单个账号的结果下结论，而是换号再试一遍，只有
+**池子里所有健康账号都被拒**才把错误交给客户端。
+
+上游的拒绝有三种姿势，都会被识别成同一类错误：
 
 | 上游表现 | 本服务行为 |
 |---|---|
-| `403 model_not_allowed`（HTTP 状态码） | `400 model_not_allowed` 透传给客户端 |
-| `200 OK` + SSE `event: error`，`code=upstream_permission_denied` | 同上；审计日志状态码记 `400`，不再记成成功 |
+| `403 model_not_allowed`（HTTP 状态码） | 换号重试；全被拒才返回 `400 model_not_allowed` |
+| `424 upstream_permission_denied`（HTTP 状态码） | 同上 |
+| `200 OK` + SSE `event: error`，`code=upstream_permission_denied` | 同上；审计日志状态码记非 200，不再记成成功 |
 
-两种拒绝都**不会**让账号进入冷却（这是请求侧问题，不是账号故障），也**不会**扣积分。
+换号只发生在**还没给下游写过任何字节**时；流式正文一旦开始下发，状态码已定局，
+这时会把上游错误如实写进流里并把审计状态改成失败，不会出现「半截正文 + 悄悄换号」。
+
+被拒**不会**让账号进入冷却（这是请求侧问题，不是账号故障），也**不会**扣积分。
 
 > 上游拒绝服务时不一定返回 4xx：实测它会用 `HTTP 200 + text/event-stream`
 > 承载错误，正文不到 200 字节，只在事件流里写一条
@@ -259,14 +268,23 @@ model_reasoning_effort = "low"
 > 管理台日志里留下一条 `status=200 tokens=0/0` 的假成功记录。
 
 各账号套餐不同、放行的模型也不同（例如体验版只放行 `phanthy-fast`、`phanthy-pro`
-和小尺寸的 `glm-5.3-flash`）。**报错就换模型**，换账号没有意义。
+和小尺寸的 `glm-5.3-flash`）。**多登录几个账号**能显著提高被拒时的成功率：
+换号重试的预算会随健康账号数放宽，账号越多越不容易真正失败。
+
+> 阵发性拒绝与「账号本身不可用」要分清：token 过期（`invalid_grant`）会被
+> 直接禁用、`Refused` 的账号不再参与挑号，这种要回管理台重新登录；而
+> `model_denied` 只跳过本次请求的这一个账号，账号仍然是健康的。
 
 运行日志里会给出可直接定位的错误行，例如：
 
 ```
 stream uid=phanthy-1790570942 kind=model_denied code=upstream_permission_denied committed=false msg="Model service access was denied. ..."
-req key=默认密钥 uid=phanthy-1790570942 model=deepseek-v4.1-flash status=400 327ms tokens=0/0 stream=true
+chat uid=phanthy-1790570942 model=phanthy-pro 上游未授权该模型（http 403 model_denied），换号重试 1/2
+req key=默认密钥 uid=phanthy-1790570968 model=phanthy-pro status=200 21347ms tokens=106355/274 stream=true
 ```
+
+只有所有账号都被拒时才会看到收尾的 `400 model_not_allowed`，消息里会列出
+试过的账号数（`model "phanthy-pro" was rejected by all 2 tried account(s): ...`）。
 
 ### 名称兼容
 
@@ -297,7 +315,7 @@ OpenAI 兼容。支持 `stream`（SSE 流式）、`max_tokens`、`temperature`�
 ### `GET /v1/models`
 
 返回上游当前公开可用的模型列表（与官网定价页一致），含 `context_length`。
-套餐未开放的模型仍会列出，但调用时返回 `400 model_not_allowed`。
+套餐未开放的模型仍会列出；调用时若池中所有健康账号都被上游拒绝，才返回 `400 model_not_allowed`。
 
 ### `GET /status`
 

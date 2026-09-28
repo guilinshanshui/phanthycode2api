@@ -228,17 +228,29 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	tried := map[string]bool{}
 	var lastErr error
+	// lastDenied 记录「上游拒绝该模型」的原始原因。模型被拒可能是单账号套餐
+	// 差异，也可能是上游瞬时抖动（实测同账号同模型 5 分钟前被拒、之后正常），
+	// 所以先换号试一遍，只有所有账号都被拒才把错误交给客户端。
+	var lastDenied string
 	var served *statusRecorder
 	if rec, ok := w.(*statusRecorder); ok {
 		served = rec
 	}
-	for i := 0; i < h.cfg.MaxRotate; i++ {
+	maxAttempts := h.cfg.MaxRotate
+	// widen 在模型被拒时把预算放宽到健康账号数：上游拒绝是秒回，
+	// 多试几个号比直接断定「套餐不含该模型」准确得多。
+	widen := func() {
+		if n := h.cfg.Pool.HealthyCount(); n > maxAttempts {
+			maxAttempts = n
+		}
+	}
+	for i := 0; i < maxAttempts; i++ {
 		acct := h.cfg.Pool.PickExcluding(tried)
 		if acct == nil {
 			break
 		}
 		tried[acct.UID] = true
-		logx.Debugf("chat attempt=%d/%d uid=%s model=%s", i+1, h.cfg.MaxRotate, acct.UID, peek.Model)
+		logx.Debugf("chat attempt=%d/%d uid=%s model=%s", i+1, maxAttempts, acct.UID, peek.Model)
 
 		// token 临近过期 → 先 refresh（失败冷却换号）
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
@@ -275,15 +287,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if status >= 400 {
 			kind := upstream.Classify(status, string(respBody))
-			logx.Debugf("chat uid=%s upstream status=%d kind=%s", acct.UID, status, kind)
-			if h.applyFailure(acct.UID, kind) {
-				// 403 套餐不含该模型：请求侧问题，账号仍然健康。
-				// 不冷却、不计错误，直接返回客户端，避免把可用账号误伤掉。
-				writeOpenAIError(w, http.StatusBadRequest, "model_not_allowed",
-					"model is not allowed for this plan: "+strings.TrimSpace(string(respBody)))
-				return
-			}
 			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
+			if h.applyFailure(acct.UID, kind) {
+				// 该账号不被允许用这个模型：属请求侧问题，账号仍然健康，
+				// 不冷却、不计错误。换号再试，别让单个账号的套餐挡掉整个请求。
+				lastDenied = strings.TrimSpace(string(respBody))
+				widen()
+				logx.Infof("chat uid=%s model=%s 上游未授权该模型（http %d %s），换号重试 %d/%d",
+					acct.UID, orDash(peek.Model), status, kind, i+1, maxAttempts)
+				continue
+			}
+			logx.Debugf("chat uid=%s upstream status=%d kind=%s", acct.UID, status, kind)
 			continue
 		}
 		defer rc.Close()
@@ -302,6 +316,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			var se *upstream.StreamError
 			if errors.As(serr, &se) {
+				if se.Kind == upstream.ErrModelDenied && !se.Committed {
+					// 还没给下游写过任何字节，可以安全换号重来。
+					lastDenied = se.Message()
+					widen()
+					logx.Infof("chat uid=%s model=%s 上游未授权该模型（%s %s），换号重试 %d/%d",
+						acct.UID, orDash(peek.Model), se.Kind, clip(se.Message(), 200), i+1, maxAttempts)
+				}
 				if h.failStream(w, served, acct.UID, se) {
 					return
 				}
@@ -316,6 +337,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var se *upstream.StreamError
 			if errors.As(err, &se) {
+				if se.Kind == upstream.ErrModelDenied && !se.Committed {
+					lastDenied = se.Message()
+					widen()
+					logx.Infof("chat uid=%s model=%s 上游未授权该模型（%s %s），换号重试 %d/%d",
+						acct.UID, orDash(peek.Model), se.Kind, clip(se.Message(), 200), i+1, maxAttempts)
+				}
 				if h.failStream(w, served, acct.UID, se) {
 					return
 				}
@@ -333,6 +360,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	if lastDenied != "" {
+		// 所有健康账号都被上游拒绝该模型。明确告诉调用方这是模型/套餐问题，
+		// 而不是「账号不可用」——后者会让客户端去重试同样的请求。
+		writeOpenAIError(w, http.StatusBadRequest, "model_not_allowed",
+			fmt.Sprintf("model %q was rejected by all %d tried account(s): %s",
+				peek.Model, len(tried), lastDenied))
+		return
+	}
 	msg := "all accounts unavailable (cooling/disabled)"
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
@@ -342,8 +377,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // applyFailure 按上游错误分类更新账号池状态。
 //
-// 返回 true 表示这是「请求侧」问题（当前套餐不含该模型 / 需要换模型），
-// 换号重试没有意义，调用方应直接把错误返回客户端，且不能把账号判成不健康。
+// 返回 true 表示这是「请求侧」问题（当前账号的套餐不含该模型）：账号本身健康，
+// 不能冷却/计错，但值得换号再试——套餐按账号而异，且上游会瞬时拒绝。
 func (h *Handler) applyFailure(uid string, kind upstream.ErrKind) bool {
 	switch kind {
 	case upstream.ErrModelDenied:
@@ -371,6 +406,10 @@ func (h *Handler) applyFailure(uid string, kind upstream.ErrKind) bool {
 // 于是把「被拒绝」当成「正常结束的空回复」，客户端一直转圈、审计日志记成
 // status=200/tokens=0/0 的成功请求。这里按分类如实处理并修正审计状态。
 //
+// 注意「模型未授权」要区别对待：账号本身是健康的，而且换号重试可能成功
+// （套餐按账号而异，上游也会瞬时拒绝），所以只要还没给下游写过任何字节，
+// 就返回 false 让主循环换号重试，绝不在这里下结论。
+//
 // 返回 true 表示已经就地响应或收尾，调用方应直接返回；false 表示可换号重试。
 func (h *Handler) failStream(w http.ResponseWriter, served *statusRecorder, uid string, se *upstream.StreamError) bool {
 	if se == nil {
@@ -390,6 +429,21 @@ func (h *Handler) failStream(w http.ResponseWriter, served *statusRecorder, uid 
 	logx.Errorf("stream uid=%s kind=%s code=%s committed=%v msg=%q",
 		uid, se.Kind, code, se.Committed, clip(msg, 300))
 
+	if se.Kind == upstream.ErrModelDenied {
+		// 账号健康：不冷却、不计错。
+		if !se.Committed {
+			// 一个字节都没下发，HTTP 状态码还能改，交给主循环换号重试。
+			return false
+		}
+		// 正文已经开始下发，状态码改不动了；Stream 已把 error 事件写进流里，
+		// 这里只把审计状态从 200 修正掉，避免这次拒绝在管理台上隐身。
+		if served != nil && served.status < 400 {
+			served.status = http.StatusBadGateway
+		}
+		logx.Errorf("stream uid=%s 已开始下发正文，无法换号重试", uid)
+		return true
+	}
+
 	fatal := h.applyFailure(uid, se.Kind)
 
 	if se.Committed {
@@ -407,8 +461,6 @@ func (h *Handler) failStream(w http.ResponseWriter, served *statusRecorder, uid 
 
 	status, outCode := http.StatusBadGateway, code
 	switch se.Kind {
-	case upstream.ErrModelDenied:
-		status, outCode = http.StatusBadRequest, "model_not_allowed"
 	case upstream.ErrHardCredit:
 		status, outCode = http.StatusPaymentRequired, "insufficient_credit"
 	case upstream.ErrSessionDead:

@@ -158,6 +158,17 @@ func (e *StreamError) Error() string {
 	return e.Event.Error()
 }
 
+// Message 返回上游给出的可读原因；没有事件时回落到 Kind，便于写进日志与响应。
+func (e *StreamError) Message() string {
+	if e == nil || e.Event == nil {
+		return "upstream stream error"
+	}
+	if e.Event.Message != "" {
+		return e.Event.Message
+	}
+	return e.Event.Code
+}
+
 // Unwrap 让 errors.As(err, &[]*ErrEvent) 能取到原始事件。
 func (e *StreamError) Unwrap() error {
 	if e == nil {

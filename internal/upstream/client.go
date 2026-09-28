@@ -98,7 +98,7 @@ var sessionDeadMarkers = []string{
 // 且 /api/oauth/usage 显示额度未消耗），所以按请求侧问题处理，不冷却账号。
 var streamDeniedMarkers = []string{
 	"upstream_permission_denied", "permission_denied",
-	"service access was denied", "access was denied", "access denied",
+	"service access was denied", "access was denied",
 }
 
 // ClassifyStreamErr 判定 SSE error 事件的类别。
@@ -138,11 +138,16 @@ func Classify(status int, body string) ErrKind {
 		return ErrHardCredit
 	}
 	lower := strings.ToLower(body)
-	if status == http.StatusForbidden {
-		for _, m := range modelDeniedMarkers {
-			if strings.Contains(lower, m) {
-				return ErrModelDenied
-			}
+	// 模型未授权不能绑死在 403 上：上游还可能用 424 等状态码承载
+	// upstream_permission_denied。漏判会走 NoteError 把健康账号冷却掉。
+	for _, m := range modelDeniedMarkers {
+		if strings.Contains(lower, m) {
+			return ErrModelDenied
+		}
+	}
+	for _, m := range streamDeniedMarkers {
+		if strings.Contains(lower, m) {
+			return ErrModelDenied
 		}
 	}
 	for _, m := range hardMarkers {

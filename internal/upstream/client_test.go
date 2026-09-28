@@ -21,6 +21,24 @@ func TestClassify_ForbiddenOtherwiseIsClient(t *testing.T) {
 	}
 }
 
+// TestClassify_ModelDeniedOnNonForbiddenStatus 回归：同类拒绝不只出现在 403。
+// 上游还用 424 + upstream_permission_denied 承载同一件事，漏判会把健康账号冷却掉。
+func TestClassify_ModelDeniedOnNonForbiddenStatus(t *testing.T) {
+	body := `{"error":{"code":"upstream_permission_denied","message":"Model service access was denied. Choose another model or contact support."}}`
+	if got := Classify(424, body); got != ErrModelDenied {
+		t.Errorf("Classify(424, upstream_permission_denied) = %v, want %v", got, ErrModelDenied)
+	}
+}
+
+// TestClassify_WAFBlockIsNotModelDenied 回归：边缘节点拦截页不能当成「模型未授权」，
+// 否则会把「换个号重试就好」误判成「这个模型不可用」，让调用方放弃重试。
+func TestClassify_WAFBlockIsNotModelDenied(t *testing.T) {
+	body := `<html><head><title>Access denied</title></head><body>Access denied</body></html>`
+	if got := Classify(http.StatusForbidden, body); got == ErrModelDenied {
+		t.Errorf("Classify(403, WAF page) = %v，不能判成模型未授权", got)
+	}
+}
+
 func TestClassify_KnownKinds(t *testing.T) {
 	cases := []struct {
 		status int

@@ -146,7 +146,8 @@ func TestChatCompletions_ModelDeniedKeepsAccountHealthy(t *testing.T) {
 
 	body := `{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 
 	st, ok := acctPool.Status("phanthy-test")
 	if !ok {
@@ -154,5 +155,103 @@ func TestChatCompletions_ModelDeniedKeepsAccountHealthy(t *testing.T) {
 	}
 	if st.Cooling || st.Disabled {
 		t.Errorf("模型未授权不应冷却账号：cooling=%v disabled=%v reason=%q", st.Cooling, st.Disabled, st.Reason)
+	}
+
+	// 换遍所有账号都被拒，才如实返回「模型不可用」，而不是含糊的 503。
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("HTTP 状态 = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "model_not_allowed") {
+		t.Errorf("应返回 model_not_allowed，body=%s", rec.Body.String())
+	}
+}
+
+// okSSE 是一段正常的流式回复，用来验证换号之后请求能真正跑通。
+const okSSE = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"phanthy-pro","usage":{"input_tokens":5,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+data: [DONE]`
+
+// TestChatCompletions_ModelDeniedFailsOverToOtherAccount 是核心回归测试。
+//
+// 上游的「模型服务被拒」是按账号阵发性出现的：实测同一账号同一模型
+// 5 分钟前被拒（0/0 tokens）、之后又正常。旧实现一旦某个账号被拒就
+// 直接返回 400，客户端看到 424 只能干等——即使池子里还有别的可用账号。
+//
+// 修复后必须换号重试，并只在所有账号都被拒时才返回 model_not_allowed。
+func TestChatCompletions_ModelDeniedFailsOverToOtherAccount(t *testing.T) {
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if r.Header.Get("X-Claude-Code-Session-Id") == "phanthy-a" {
+			_, _ = io.WriteString(w, denialSSE)
+			return
+		}
+		_, _ = io.WriteString(w, okSSE)
+	}))
+	defer upstreamSrv.Close()
+
+	store, err := admin.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("admin.New: %v", err)
+	}
+	acctPool := pool.New("")
+	for _, uid := range []string{"phanthy-a", "phanthy-b"} {
+		acctPool.Add(&auth.Auth{
+			UID: uid, APIKey: "sk-" + uid,
+			AccessToken: "tok-" + uid, ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+	}
+	h := NewHandler(Config{
+		Pool:      acctPool,
+		Upstream:  upstream.New(upstreamSrv.URL),
+		Admin:     admin.NewHandler(store, "", nil),
+		MaxRotate: 2,
+	})
+
+	body := `{"model":"phanthy-pro","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP 状态 = %d, want 200（账号 a 被拒应换到账号 b）, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "hello") {
+		t.Errorf("应返回账号 b 的正文，body=%s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "upstream_permission_denied") {
+		t.Errorf("换号成功后不应把账号 a 的拒绝写进流里，body=%s", rec.Body.String())
+	}
+
+	logs := store.ListLogs(10, "")
+	if len(logs) == 0 {
+		t.Fatal("没有写入审计日志")
+	}
+	if logs[0].Status != http.StatusOK || logs[0].UID != "phanthy-b" {
+		t.Errorf("审计日志 = status=%d uid=%s, want 200/phanthy-b", logs[0].Status, logs[0].UID)
+	}
+
+	st, ok := acctPool.Status("phanthy-a")
+	if !ok {
+		t.Fatal("账号 a 不见了")
+	}
+	if st.Cooling || st.Disabled {
+		t.Errorf("被上游拒绝的账号仍应健康：cooling=%v disabled=%v reason=%q", st.Cooling, st.Disabled, st.Reason)
 	}
 }
