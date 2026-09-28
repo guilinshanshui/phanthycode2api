@@ -81,29 +81,69 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		if strings.HasPrefix(authz, "Bearer ") {
 			plain = strings.TrimPrefix(authz, "Bearer ")
 		}
-		model := peekModel(r)
+		model, stream := peekRequest(r)
 		if h.cfg.APIKey == "" && h.cfg.Admin == nil {
 			next(w, r)
 			return
 		}
 		if h.cfg.Admin != nil {
-			if _, ok := h.cfg.Admin.LookupKey(plain, model); ok {
-				next(w, r)
+			if key, ok := h.cfg.Admin.LookupKey(plain, model); ok {
+				h.serveWithLog(w, r, next, model, stream, key.ID, key.Name)
 				return
 			}
 		}
 		if h.cfg.APIKey != "" && subtle.ConstantTimeCompare([]byte(plain), []byte(h.cfg.APIKey)) == 1 {
-			next(w, r)
+			h.serveWithLog(w, r, next, model, stream, "", "")
 			return
 		}
 		if h.cfg.APIKey == "" && (h.cfg.Admin == nil || h.cfg.Admin.LegacyUnauthenticated()) {
-			next(w, r)
+			h.serveWithLog(w, r, next, model, stream, "", "")
 			return
 		}
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 	}
 }
 
+// serveWithLog 记录 /v1/chat/completions 的模型、状态与耗时。
+func (h *Handler) serveWithLog(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, model string, stream bool, keyID, keyName string) {
+	if h.cfg.Admin == nil || r.URL.Path != "/v1/chat/completions" {
+		next(w, r)
+		return
+	}
+	start := time.Now()
+	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	next(recorder, r)
+	h.cfg.Admin.NoteRequest(admin.LogEntry{
+		Time:      time.Now().Unix(),
+		KeyID:     keyID,
+		KeyName:   keyName,
+		Model:     model,
+		Status:    recorder.status,
+		LatencyMs: time.Since(start).Milliseconds(),
+		Stream:    stream,
+		RemoteIP:  remoteIP(r),
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusRecorder) Write(data []byte) (int, error) {
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *statusRecorder) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
@@ -270,22 +310,22 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 	})
 }
 
-func peekModel(r *http.Request) string {
+func peekRequest(r *http.Request) (string, bool) {
 	if r == nil || r.Body == nil {
-		return ""
+		return "", false
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	var payload struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &payload)
-	return payload.Model
+	return payload.Model, payload.Stream
 }
-
 func remoteIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
