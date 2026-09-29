@@ -1,9 +1,12 @@
-// Package reward 解析账号的「每日开工奖励」台账。
+// Package reward 解析账号的「每日开工奖励」（每日登录奖励）。
 //
-// 上游没有可以直接调用的领取接口：奖励由服务端在每个北京时间业务日 0 点，
-// 依据账号已登记的桌面端安装（rewards 里的 source_object_type=DesktopInstallation）
-// 自动发放，落账为 /api/oauth/rewards 中的一条 daily_login 记录。
-// 所以本项目能做的是「自动对账 + 到账提醒」，而不是代替桌面端去点领取。
+// 两个数据源：
+//
+//	/api/oauth/activities/summary          权威状态：今日是否已发、连续天数、下一笔可领时间
+//	/api/oauth/rewards                     台账：每笔 daily_login 的发放时间与积分
+//
+// 领取本身由 upstream 包按桌面端签名协议调用
+// /api/oauth/activities/daily-login/claim 完成（幂等），本包只负责口径换算与展示。
 package reward
 
 import (
@@ -29,7 +32,79 @@ type Daily struct {
 	NextExpectedAt string  `json:"next_expected_at"` // 下一笔预计到账时间（北京时间 0 点）
 	TotalGranted   float64 `json:"total_granted"`    // 历史累计到账积分
 	GrantedDays    int     `json:"granted_days"`     // 历史到账天数
+
+	// 以下字段来自上游 activities/summary 的权威口径（比台账推算更准）。
+	Status         string  `json:"status,omitempty"`           // granted_today / claimable 等上游状态
+	NextPoints     float64 `json:"next_points,omitempty"`      // 下一笔可得积分（按连续天数阶梯）
+	NextEligibleAt string  `json:"next_eligible_at,omitempty"` // 下一笔可领时间（RFC3339）
+	Source         string  `json:"source,omitempty"`           // ledger（仅台账）| summary（已对齐上游）
 }
+
+// Summary 是 /api/oauth/activities/summary 里与本项目相关的字段。
+type Summary struct {
+	Enabled        bool    // feature_flags.daily_enabled
+	Status         string  // daily.status
+	ServerDate     string  // daily.server_date（上游业务日）
+	Points         float64 // daily.points（今日已发放积分）
+	StreakDay      int     // daily.streak_day
+	NextPoints     float64 // daily.next_points
+	NextEligibleAt string  // daily.next_eligible_at
+	Available      float64 // credits.available（钱包可用积分）
+	HasAvailable   bool
+}
+
+// ParseSummary 从 activities/summary 响应里取出开工奖励与钱包余额。
+// 第二个返回值报告响应里是否带 daily 段（缺段说明账号没有开工奖励资格）。
+func ParseSummary(summary map[string]any) (Summary, bool) {
+	var out Summary
+	daily, ok := summary["daily"].(map[string]any)
+	if !ok {
+		return out, false
+	}
+	out.Status, _ = daily["status"].(string)
+	out.ServerDate, _ = daily["server_date"].(string)
+	out.NextEligibleAt, _ = daily["next_eligible_at"].(string)
+	out.Points, _ = toFloat(daily["points"])
+	out.NextPoints, _ = toFloat(daily["next_points"])
+	if streak, ok := toFloat(daily["streak_day"]); ok {
+		out.StreakDay = int(streak)
+	}
+	if flags, ok := summary["feature_flags"].(map[string]any); ok {
+		out.Enabled, _ = flags["daily_enabled"].(bool)
+	}
+	if credits, ok := summary["credits"].(map[string]any); ok {
+		if available, ok := toFloat(credits["available"]); ok {
+			out.Available = available
+			out.HasAvailable = true
+		}
+	}
+	return out, true
+}
+
+// MergeSummary 用上游权威状态覆盖台账推算值。
+// 台账只记录已发放的批次，推断不出「今天还没发」的原因，也拿不到阶梯下一档积分。
+func (d Daily) MergeSummary(s Summary) Daily {
+	if s.ServerDate != "" {
+		d.Today = s.ServerDate
+	}
+	d.Status = s.Status
+	d.NextPoints = s.NextPoints
+	d.NextEligibleAt = s.NextEligibleAt
+	d.Source = "summary"
+	if s.StreakDay > 0 {
+		d.Streak = s.StreakDay
+	}
+	if s.Status == "granted_today" {
+		d.GrantedToday = true
+		if s.Points > 0 {
+			d.TodayPoints = s.Points
+		}
+	}
+	return d
+}
+
+// BeijingDate 返回 t 对应的上游业务日（北京时间日期）。
+func BeijingDate(t time.Time) string { return t.In(beijing).Format(dayLayout) }
 
 // Analyze 汇总 rewards 台账里的每日开工奖励。
 // now 用于判定「今天」；台账为空时返回可读的默认值。
@@ -65,6 +140,7 @@ func Analyze(rewards []map[string]any, now time.Time) Daily {
 		TotalGranted:   total,
 		GrantedDays:    len(pointsByDay),
 		LastPoints:     lastPoints,
+		Source:         "ledger",
 	}
 	if !last.IsZero() {
 		out.LastGrantedAt = last.In(beijing).Format(time.RFC3339)

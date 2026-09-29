@@ -22,6 +22,7 @@ type AccountManager struct {
 	Refresh    func(uid string) error
 	Enable     func(uid string) error
 	Keepalive  func(uid string) error
+	Claim      func(uid string) error
 }
 
 // Handler 承载 /admin 页面与 /admin/api/* 接口。
@@ -256,8 +257,14 @@ func (h *Handler) accounts(w http.ResponseWriter, r *http.Request, tail []string
 		operationFn = h.Accounts.Enable
 	case "keepalive":
 		operationFn = h.Accounts.Keepalive
+	case "claim":
+		operationFn = h.Accounts.Claim
 	default:
 		http.NotFound(w, r)
+		return
+	}
+	if operationFn == nil {
+		writeAdminJSON(w, http.StatusNotImplemented, map[string]any{"error": "operation not supported"})
 		return
 	}
 	if err := operationFn(uid); err != nil {

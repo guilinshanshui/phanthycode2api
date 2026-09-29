@@ -84,11 +84,16 @@ func main() {
 
 	up := upstream.New(cfg.BaseURL)
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	// 桌面端安装身份（每日开工奖励签名用）与 state.json 放在同一数据目录。
+	up.DesktopKeyPath = filepath.Join(filepath.Dir(cfg.StateFile), "desktop-key.json")
 
 	sch := scheduler.New(scheduler.Config{
 		Pool:           p,
 		Upstream:       up,
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		DailyReward:    cfg.Schedule.DailyReward,
+		ClaimHour:      cfg.Schedule.ClaimHour,
+		ClaimMinute:    cfg.Schedule.ClaimMinute,
 	})
 
 	if !cfg.Admin.Enabled && cfg.Admin.PasswordHash == "" {
@@ -146,6 +151,7 @@ func main() {
 			Refresh:   func(uid string) error { return RefreshAccount(upstream.New(cfg.BaseURL), p, uid) },
 			Enable:    func(uid string) error { p.Enable(uid); return nil },
 			Keepalive: func(uid string) error { return KeepaliveAccount(upstream.New(cfg.BaseURL), p, uid) },
+			Claim:     sch.ClaimForUID,
 		}
 	}
 
@@ -343,7 +349,10 @@ func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
 		}
 	}
 	if err != nil {
-		return cacheUsage(account.UID, map[string]any{"credits_error": err.Error()})
+		data := map[string]any{"credits_error": err.Error()}
+		// 上游账号接口挂了也照常汇总开工奖励：管理台据此判断「今天到底领到没有、要不要重新登录」。
+		attachDaily(client, account, data, nil, false)
+		return cacheUsage(account.UID, data)
 	}
 
 	data := extractUsage(raw)
@@ -368,13 +377,7 @@ func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
 	if rewardsErr != nil && len(rewards) == 0 {
 		data["credits_rewards_error"] = rewardsErr.Error()
 	}
-	// 每日开工奖励由上游按北京时间业务日 0 点自动发放，本项目只做对账与展示。
-	if rewardsErr == nil || len(rewards) > 0 {
-		data["daily"] = reward.Analyze(rewards, time.Now())
-		if daily, ok := data["daily"].(reward.Daily); ok {
-			notifyDailyReward(account, daily)
-		}
-	}
+	attachDaily(client, account, data, rewards, rewardsErr == nil || len(rewards) > 0)
 
 	pools, pending := buildWallet(planName, data, rewards, summary)
 	if len(pools) == 0 {
@@ -402,6 +405,34 @@ func accountUsage(client *upstream.Client, account *auth.Auth) map[string]any {
 	return cacheUsage(account.UID, data)
 }
 
+// attachDaily 汇总每日开工奖励，写进管理页用的 data：
+// 台账（/api/oauth/rewards）给历史累计，activities/summary 给上游权威的今日状态与阶梯下一档。
+// ledgerOK 为 false 表示台账没读到（账号接口已失败），此时只信 summary，不再拿空台账冒充「无记录」。
+func attachDaily(client *upstream.Client, account *auth.Auth, data map[string]any, rewards []map[string]any, ledgerOK bool) {
+	daily := reward.Daily{Today: reward.BeijingDate(time.Now())}
+	if ledgerOK {
+		daily = reward.Analyze(rewards, time.Now())
+	}
+	id, idErr := client.DesktopIdentity()
+	if idErr != nil {
+		data["daily_summary_error"] = "桌面端安装身份不可用: " + idErr.Error()
+	} else if summary, sumErr := client.ActivitySummary(account, id); sumErr == nil {
+		if state, ok := reward.ParseSummary(summary); ok {
+			daily = daily.MergeSummary(state)
+			// credits.available 是上游钱包余额，与官网「钱包积分」逐分一致。
+			if state.HasAvailable {
+				data["credits_available"] = state.Available
+			}
+		}
+	} else {
+		data["daily_summary_error"] = sumErr.Error()
+	}
+	if ledgerOK || daily.Source == "summary" {
+		data["daily"] = daily
+		notifyDailyReward(account, daily)
+	}
+}
+
 // cacheUsage 写入管理页缓存并返回结果。
 func cacheUsage(uid string, data map[string]any) map[string]any {
 	usageCache.Lock()
@@ -411,8 +442,8 @@ func cacheUsage(uid string, data map[string]any) map[string]any {
 }
 
 // notifyDailyReward 在每日开工奖励到账时提示一次。
-// 上游没有可调用的领取接口，奖励由服务端按北京时间业务日 0 点自动发放，
-// 这里只做对账提醒，方便在管理台或日志里确认当天是否到账。
+// 领取由 scheduler 每天自动完成，这里负责在管理台读到「已到账」时补一条日志，
+// 每个账号每个业务日只提示一次。
 func notifyDailyReward(account *auth.Auth, daily reward.Daily) {
 	if !daily.GrantedToday || daily.Today == "" {
 		return

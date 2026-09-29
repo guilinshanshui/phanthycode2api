@@ -132,6 +132,23 @@ details.raw[open] summary:after{content:"收起"}
     </div>
   </div>
   <div class="settings-card">
+    <div class="settings-head"><div><h3>每日开工奖励</h3><p>模拟官方桌面端：每天自动登记安装并领取「每日登录奖励」。奖励按北京时间 0 点后可领，连续天数越多单次越多。</p></div></div>
+    <div class="settings-body">
+      <div class="settings-grid">
+        <div class="field"><label>自动领取</label>
+          <select id="cfgDailyReward">
+            <option value="1">开启（推荐）</option>
+            <option value="0">关闭</option>
+          </select>
+          <span class="hint">关闭后仍可在账号页点「领取奖励」手动补领</span>
+        </div>
+        <div class="field"><label>领取时刻（北京时间 · 时）</label><input id="cfgClaimHour" type="number" min="0" max="23"><span class="hint">默认 0 点，建议不早于 00:05</span></div>
+        <div class="field"><label>领取时刻（北京时间 · 分）</label><input id="cfgClaimMinute" type="number" min="0" max="59"><span class="hint">默认 5 分</span></div>
+      </div>
+      <div class="settings-actions"><button class="primary" onclick="saveConfig()">保存配置</button><button onclick="loadConfig()">重新加载</button><span id="configMsg3" class="msg"></span></div>
+    </div>
+  </div>
+  <div class="settings-card">
     <details class="raw">
       <summary>高级：原始配置文件</summary>
       <div class="settings-body">
@@ -165,7 +182,7 @@ document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>{document.querySe
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function dt(v){return v?new Date(v*1000).toLocaleString():'-'}
 async function loadDashboard(){const [stats,accounts,keys]=await Promise.all([api('stats'),api('accounts'),api('keys')]);$('#stAccounts').textContent=accounts.accounts.length;$('#stKeys').textContent=keys.keys.length;$('#stTotal').textContent=stats.total;$('#stErrors').textContent=stats.errors;$('#byKey').innerHTML=Object.entries(stats.by_key).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')||'<tr><td colspan="2" class="muted">暂无数据</td></tr>';const days=Object.entries(stats.daily).sort();const max=Math.max(1,...days.map(x=>x[1]));$('#chart').innerHTML=days.map(([d,v])=>`<div style="display:flex;align-items:center;gap:8px;margin:5px 0"><span class="muted" style="width:78px">${d}</span><div class="bar" style="flex:1"><i style="width:${v/max*100}%"></i></span></span><span style="width:45px;text-align:right">${v}</span></div>`).join('')||'<span class="muted">暂无数据</span>'}
-async function loadAccounts(){const d=await api('accounts');state.accounts=d.accounts;$('#accountRows').innerHTML=d.accounts.map(a=>`<tr><td><b>${esc(a.nickname||a.uid)}</b><div class="muted mono">${esc(a.uid)}</div></td><td>${a.disabled?'<span class="pill off">禁用</span>':a.cooling?'<span class="pill">冷却</span>':'<span class="pill on">健康</span>'}${a.reason?`<div class="muted">${esc(a.reason)}</div>`:''}</td><td>${creditsCell(a)}</td><td>${a.has_api_key?'API key':'Access token'}</td><td><button onclick="accountOp('${esc(a.uid)}','refresh')">刷新</button> <button onclick="accountOp('${esc(a.uid)}','keepalive')">保活</button> <button onclick="accountOp('${esc(a.uid)}','enable')">恢复</button> <button class="danger" onclick="accountOp('${esc(a.uid)}','delete')">删除</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无账号</td></tr>'}
+async function loadAccounts(){const d=await api('accounts');state.accounts=d.accounts;$('#accountRows').innerHTML=d.accounts.map(a=>`<tr><td><b>${esc(a.nickname||a.uid)}</b><div class="muted mono">${esc(a.uid)}</div></td><td>${a.disabled?'<span class="pill off">禁用</span>':a.cooling?'<span class="pill">冷却</span>':'<span class="pill on">健康</span>'}${a.reason?`<div class="muted">${esc(a.reason)}</div>`:''}</td><td>${creditsCell(a)}</td><td>${a.has_api_key?'API key':'Access token'}</td><td><button onclick="accountOp('${esc(a.uid)}','claim')">领取奖励</button> <button onclick="accountOp('${esc(a.uid)}','refresh')">刷新</button> <button onclick="accountOp('${esc(a.uid)}','keepalive')">保活</button> <button onclick="accountOp('${esc(a.uid)}','enable')">恢复</button> <button class="danger" onclick="accountOp('${esc(a.uid)}','delete')">删除</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无账号</td></tr>'}
 function num(v){if(v==null)return'0';const n=Number(v);if(!isFinite(n))return String(v);return (Math.round(n*100)/100).toLocaleString('zh-CN')}
 function day(s){if(!s)return'';const d=new Date(s);return isNaN(d)?'':(d.getMonth()+1)+'月'+d.getDate()+'日'}
 function dailyLine(d){
@@ -175,24 +192,35 @@ function dailyLine(d){
  if(d.total_granted)bits.push('累计 '+num(d.total_granted));
  const tail=bits.length?'<span class="muted"> · '+esc(bits.join(' · '))+'</span>':'';
  if(d.granted_today){
-  const tip='开工奖励由上游按北京时间 0 点自动发放'+(d.last_granted_at?'，最近一次 '+d.last_granted_at:'');
-  return '<div class="note" title="'+esc(tip)+'" style="color:#0f766e">开工奖励 <b>今日 +'+num(d.today_points)+'</b>'+tail+'</div>';
+  const tip='上游按北京时间 0 点发放，本服务已自动领取'+(d.next_points?'；下一档 '+num(d.next_points)+' 积分':'');
+  return '<div class="note" style="color:#0f766e" title="'+esc(tip)+'">开工奖励 <b>今日已到账 +'+num(d.today_points)+'</b>'+tail+'</div>';
  }
- if(!d.granted_days)return '<div class="note" title="上游按账号的桌面端安装登记发放，本服务不能代领；该账号目前没有任何开工奖励记录">开工奖励 <span class="muted">暂无记录</span></div>';
+ if(d.source==='summary'){
+  const info=[];
+  if(d.next_points)info.push('下一档 '+num(d.next_points)+' 积分');
+  if(d.next_eligible_at)info.push('下次可领 '+new Date(d.next_eligible_at).toLocaleString());
+  return '<div class="note" title="上游按北京时间 0 点发放，本服务到点会自动领取；也可在操作列点「领取奖励」手动补领">开工奖励 <span class="muted">今日待领取</span>'
+   +(info.length?'<span class="muted"> · '+esc(info.join(' · '))+'</span>':'')+tail+'</div>';
+ }
+ if(!d.granted_days)return '<div class="note" title="服务每天会自动登记桌面端安装并领取，也可在操作列点「领取奖励」手动补领">开工奖励 <span class="muted">暂无记录</span></div>';
  const dueMs=Date.parse(d.today+'T00:30:00+08:00');
- if(isFinite(dueMs)&&Date.now()>dueMs)return '<div class="note" title="上游按北京时间 0 点发放，超过 30 分钟仍未到账，建议检查账号是否失效" style="color:#b45309">开工奖励 <b>今日未到账</b>'+tail+'</div>';
- return '<div class="note" title="上游按北京时间 0 点发放">开工奖励 <span class="muted">今日待发放</span>'+tail+'</div>';
+ if(isFinite(dueMs)&&Date.now()>dueMs)return '<div class="note" style="color:#b45309" title="超过 30 分钟仍未到账，可在操作列点「领取奖励」手动补领">开工奖励 <b>今日未到账</b>'+tail+'</div>';
+ return '<div class="note" title="上游按北京时间 0 点发放，本服务到点会自动领取">开工奖励 <span class="muted">今日待发放</span>'+tail+'</div>';
 }
 function creditsCell(a){
- if(a.credits_error)return '<span class="muted">读取失败</span>';
+ if(a.credits_error)return '<span class="muted">读取失败</span>'+dailyLine(a.daily);
+ const avail=a.credits_available;
  const pools=Array.isArray(a.wallet_pools)?a.wallet_pools:[];
  if(!pools.length){
+  if(avail!=null)return '<b>'+num(avail)+'</b><span class="muted"> 积分</span><div class="muted">官网钱包余额</div>'+dailyLine(a.daily);
   if(a.credits_remaining==null)return '<span class="muted">-</span>';
   const reset=a.credits_reset_at?'<div class="muted">到期 '+day(a.credits_reset_at)+'</div>':'';
   const pct=a.credits_percent==null?'':' '+a.credits_percent+'%';
-  return '<b>'+num(a.credits_remaining)+'</b><span class="muted"> / '+num(a.credits_total)+esc(pct)+'</span>'+reset;
+  return '<b>'+num(a.credits_remaining)+'</b><span class="muted"> / '+num(a.credits_total)+esc(pct)+'</span>'+reset+dailyLine(a.daily);
  }
- const total=a.wallet_total||0,left=a.wallet_remaining||0,used=a.wallet_used||0;
+ const total=a.wallet_total||0;
+ const left=avail!=null?avail:(a.wallet_remaining||0);
+ const used=a.wallet_used||0;
  const pct=total>0?Math.max(0,Math.min(100,left/total*100)):0;
  const level=pct<=10?'low':pct<=30?'warn':'';
  const chips=pools.map(p=>{
@@ -200,7 +228,9 @@ function creditsCell(a){
   return '<span class="pool" title="'+esc(tip)+'">'+esc(p.label)+'<b>'+num(p.remaining)+'</b><i>/'+num(p.total)+'</i>'+(p.estimate?'<em>≈</em>':'')+'</span>';
  }).join('');
  const expiry=pools.map(p=>p.expires_at).filter(Boolean).sort()[0];
- const notes=['已用 '+num(used)+(a.wallet_approx?'（估算）':'')];
+ const notes=[];
+ if(avail!=null)notes.push('官网余额 '+num(avail));
+ notes.push('已用 '+num(used)+(a.wallet_approx?'（估算）':''));
  if(expiry)notes.push('最近到期 '+day(expiry));
  if(a.wallet_pending>0)notes.push('待发放 '+num(a.wallet_pending));
  return '<div class="wallet"><div class="wallet-head"><b>'+num(left)+'</b><span class="muted">/ '+num(total)+'</span></div>'
@@ -223,9 +253,9 @@ async function loadLogs(){const d=await api('logs?limit=200');$('#logRows').inne
 async function clearLogs(){if(confirm('确定清空日志？')){await fetch('/admin/api/logs',{method:'DELETE'});loadLogs()}}
 async function changePassword(){const password=$('#newPassword').value;if(password.length<8){$('#passwordMsg').textContent='密码至少 8 位';return}if(password!==$('#confirmPassword').value){$('#passwordMsg').textContent='两次输入的密码不一致';return}$('#passwordMsg').textContent='提交中...';try{await api('password',{method:'POST',body:JSON.stringify({password})});$('#newPassword').value='';$('#confirmPassword').value='';$('#passwordMsg').textContent='已修改，下次登录使用新密码'}catch(e){$('#passwordMsg').textContent=e.message}}
 function splitHours(value){return String(value||'').split(/[,\s]+/).map(x=>parseInt(x,10)).filter(x=>!isNaN(x))}
-async function loadConfig(){const d=await api('config');const c=d.config;$('#cfgListen').value=c.listen||'';$('#cfgAPIKey').value=c.api_key||'';$('#cfgAuthDir').value=c.auth_dir||'';$('#cfgStateFile').value=c.state_file||'';$('#cfgBaseURL').value=c.base_url||'';$('#cfgTimeout').value=c.upstream?.timeout_seconds||120;$('#cfgLogLevel').value=c.log_level||'info';$('#cfgThinkingMode').value=c.thinking?.mode||'off';$('#cfgThinkingBudget').value=c.thinking?.budget_tokens||4096;$('#cfgHardCredit').value=c.cooldown?.hard_credit||'';$('#cfgSoftRate').value=c.cooldown?.soft_rate||'';$('#cfgErrThreshold').value=c.cooldown?.err_threshold||3;$('#cfgErrCooldown').value=c.cooldown?.err_cooldown||'';$('#cfgKeepaliveHours').value=(c.schedule?.keepalive_hours||[]).join(',');$('#configText').value=JSON.stringify(c,null,2)}
-function graphicalConfig(){return {log_level:$('#cfgLogLevel').value,listen:$('#cfgListen').value.trim(),api_key:$('#cfgAPIKey').value,auth_dir:$('#cfgAuthDir').value.trim(),state_file:$('#cfgStateFile').value.trim(),base_url:$('#cfgBaseURL').value.trim(),cooldown:{hard_credit:$('#cfgHardCredit').value.trim(),soft_rate:$('#cfgSoftRate').value.trim(),err_threshold:+$('#cfgErrThreshold').value||3,err_cooldown:$('#cfgErrCooldown').value.trim()},schedule:{keepalive_hours:splitHours($('#cfgKeepaliveHours').value)},upstream:{timeout_seconds:+$('#cfgTimeout').value||120},thinking:{mode:$('#cfgThinkingMode').value,budget_tokens:+$('#cfgThinkingBudget').value||4096}}}
-async function saveConfig(){const msg=t=>['#configMsg','#configMsg2'].forEach(s=>{const el=$(s);if(el)el.textContent=t});msg('保存中...');try{await api('config',{method:'PUT',body:JSON.stringify(graphicalConfig())});msg('已保存，重启后生效');loadConfig()}catch(e){msg(e.message)}}
+async function loadConfig(){const d=await api('config');const c=d.config;$('#cfgListen').value=c.listen||'';$('#cfgAPIKey').value=c.api_key||'';$('#cfgAuthDir').value=c.auth_dir||'';$('#cfgStateFile').value=c.state_file||'';$('#cfgBaseURL').value=c.base_url||'';$('#cfgTimeout').value=c.upstream?.timeout_seconds||120;$('#cfgLogLevel').value=c.log_level||'info';$('#cfgThinkingMode').value=c.thinking?.mode||'off';$('#cfgThinkingBudget').value=c.thinking?.budget_tokens||4096;$('#cfgHardCredit').value=c.cooldown?.hard_credit||'';$('#cfgSoftRate').value=c.cooldown?.soft_rate||'';$('#cfgErrThreshold').value=c.cooldown?.err_threshold||3;$('#cfgErrCooldown').value=c.cooldown?.err_cooldown||'';$('#cfgKeepaliveHours').value=(c.schedule?.keepalive_hours||[]).join(',');$('#cfgDailyReward').value=c.schedule?.daily_reward===false?'0':'1';$('#cfgClaimHour').value=c.schedule?.claim_hour??0;$('#cfgClaimMinute').value=c.schedule?.claim_minute??5;$('#configText').value=JSON.stringify(c,null,2)}
+function graphicalConfig(){const _h=parseInt($('#cfgClaimHour').value,10),_m=parseInt($('#cfgClaimMinute').value,10);return {log_level:$('#cfgLogLevel').value,listen:$('#cfgListen').value.trim(),api_key:$('#cfgAPIKey').value,auth_dir:$('#cfgAuthDir').value.trim(),state_file:$('#cfgStateFile').value.trim(),base_url:$('#cfgBaseURL').value.trim(),cooldown:{hard_credit:$('#cfgHardCredit').value.trim(),soft_rate:$('#cfgSoftRate').value.trim(),err_threshold:+$('#cfgErrThreshold').value||3,err_cooldown:$('#cfgErrCooldown').value.trim()},schedule:{keepalive_hours:splitHours($('#cfgKeepaliveHours').value),daily_reward:$('#cfgDailyReward').value==='1',claim_hour:isNaN(_h)?0:_h,claim_minute:isNaN(_m)?5:_m},upstream:{timeout_seconds:+$('#cfgTimeout').value||120},thinking:{mode:$('#cfgThinkingMode').value,budget_tokens:+$('#cfgThinkingBudget').value||4096}}}
+async function saveConfig(){const msg=t=>['#configMsg','#configMsg2','#configMsg3'].forEach(s=>{const el=$(s);if(el)el.textContent=t});msg('保存中...');try{await api('config',{method:'PUT',body:JSON.stringify(graphicalConfig())});msg('已保存，重启后生效');loadConfig()}catch(e){msg(e.message)}}
 async function saveRawConfig(){$('#rawMsg').textContent='保存中...';try{const raw=JSON.parse($('#configText').value);await api('config',{method:'PUT',body:JSON.stringify(raw)});$('#rawMsg').textContent='已保存，重启后生效';loadConfig()}catch(e){$('#rawMsg').textContent=e.message}}
 async function boot(){try{await api('me');$('#login').style.display='none';loadDashboard()}catch(e){$('#login').style.display='grid'}}
 $('#password').addEventListener('keydown',e=>{if(e.key==='Enter')login()});boot()

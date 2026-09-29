@@ -37,6 +37,9 @@ type Config struct {
 
 	Schedule struct {
 		KeepaliveHours []int `json:"keepalive_hours"` // [22]
+		DailyReward    bool  `json:"daily_reward"`    // 每天自动领取开工奖励，默认 true
+		ClaimHour      int   `json:"claim_hour"`      // 领取时刻（北京时间小时），默认 0
+		ClaimMinute    int   `json:"claim_minute"`    // 领取时刻（北京时间分钟），默认 5
 	} `json:"schedule"`
 
 	Upstream struct {
@@ -74,6 +77,9 @@ func Default() *Config {
 	c.Cooldown.ErrThresh = 5
 	c.Cooldown.ErrCooldown = "2m"
 	c.Schedule.KeepaliveHours = []int{22}
+	c.Schedule.DailyReward = true
+	c.Schedule.ClaimHour = 0
+	c.Schedule.ClaimMinute = 5
 	c.Upstream.TimeoutSeconds = 120
 	c.Thinking.Mode = "off"
 	c.Thinking.BudgetTokens = upstream.DefaultThinkingBudget
@@ -129,6 +135,19 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("P2A_ERR_COOLDOWN"); v != "" {
 		c.Cooldown.ErrCooldown = v
 	}
+	if v := os.Getenv("P2A_DAILY_REWARD"); v != "" {
+		c.Schedule.DailyReward = v != "0" && !strings.EqualFold(v, "false")
+	}
+	if v := os.Getenv("P2A_CLAIM_HOUR"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Schedule.ClaimHour = n
+		}
+	}
+	if v := os.Getenv("P2A_CLAIM_MINUTE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Schedule.ClaimMinute = n
+		}
+	}
 	if v := os.Getenv("P2A_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Upstream.TimeoutSeconds = n
@@ -160,6 +179,12 @@ func (c *Config) normalize() error {
 	}
 	if c.Cooldown.ErrThresh <= 0 {
 		c.Cooldown.ErrThresh = 5
+	}
+	if c.Schedule.ClaimHour < 0 || c.Schedule.ClaimHour > 23 {
+		c.Schedule.ClaimHour = 0
+	}
+	if c.Schedule.ClaimMinute < 0 || c.Schedule.ClaimMinute > 59 {
+		c.Schedule.ClaimMinute = 5
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120

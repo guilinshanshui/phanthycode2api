@@ -12,7 +12,10 @@
     "err_cooldown": "10m"
   },
   "schedule": {
-    "keepalive_hours": [22]
+    "keepalive_hours": [22],
+    "daily_reward": true,
+    "claim_hour": 0,
+    "claim_minute": 5
   },
   "upstream": {
     "timeout_seconds": 120

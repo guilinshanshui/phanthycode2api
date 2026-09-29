@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -192,6 +194,13 @@ type Client struct {
 	RewardsURL      string // {Base}/api/oauth/rewards
 	UsageSummaryURL string // {Base}/api/oauth/usage/summary
 
+	// DesktopKeyPath 是桌面端安装身份（Ed25519 seed）的落盘路径。
+	// 每日开工奖励的领取接口要求签名，身份首次使用时生成并复用。
+	DesktopKeyPath string
+
+	desktopMu sync.Mutex
+	desktopID *DesktopIdentity
+
 	// apiKeyUnsupported 记录上游是否已确认没有 create_api_key 路由。
 	// 线上该接口固定 404，每次请求都试一遍等于白跑一次往返并刷一条错误日志。
 	apiKeyUnsupported atomic.Bool
@@ -219,6 +228,7 @@ func New(baseURL string) *Client {
 		OAuthBetaHeader: "oauth-2025-04-20",
 		RewardsURL:      base + "/api/oauth/rewards",
 		UsageSummaryURL: base + "/api/oauth/usage/summary",
+		DesktopKeyPath:  filepath.Join("data", "desktop-key.json"),
 	}
 }
 
