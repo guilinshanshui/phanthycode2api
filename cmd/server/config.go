@@ -36,10 +36,18 @@ type Config struct {
 	} `json:"cooldown"`
 
 	Schedule struct {
-		KeepaliveHours []int `json:"keepalive_hours"` // [22]
-		DailyReward    bool  `json:"daily_reward"`    // 每天自动领取开工奖励，默认 true
-		ClaimHour      int   `json:"claim_hour"`      // 领取时刻（北京时间小时），默认 0
-		ClaimMinute    int   `json:"claim_minute"`    // 领取时刻（北京时间分钟），默认 5
+		// KeepaliveInterval 是后台自动保活的检查间隔，默认 "30m"；"0" 关闭。
+		// 每轮只刷新 access_token 剩余不足 KeepaliveSkew 的账号。
+		KeepaliveInterval string `json:"keepalive_interval"`
+		// KeepaliveSkew 是保活提前量，默认 "15m"。
+		KeepaliveSkew string `json:"keepalive_skew"`
+		// KeepaliveHours 是额外的定点保活小时（本地时区），留空即不设定点保活。
+		KeepaliveHours []int `json:"keepalive_hours"`
+		// AutoRecover 为真（默认）时，被禁用的账号也会参与保活，刷新成功后自动恢复。
+		AutoRecover bool `json:"auto_recover"`
+		DailyReward bool `json:"daily_reward"` // 每天自动领取开工奖励，默认 true
+		ClaimHour   int  `json:"claim_hour"`   // 领取时刻（北京时间小时），默认 0
+		ClaimMinute int  `json:"claim_minute"` // 领取时刻（北京时间分钟），默认 5
 	} `json:"schedule"`
 
 	Upstream struct {
@@ -55,9 +63,11 @@ type Config struct {
 	} `json:"thinking"`
 
 	// 解析后
-	HardCreditDur  time.Duration `json:"-"`
-	SoftRateDur    time.Duration `json:"-"`
-	ErrCooldownDur time.Duration `json:"-"`
+	HardCreditDur        time.Duration `json:"-"`
+	SoftRateDur          time.Duration `json:"-"`
+	ErrCooldownDur       time.Duration `json:"-"`
+	KeepaliveIntervalDur time.Duration `json:"-"`
+	KeepaliveSkewDur     time.Duration `json:"-"`
 }
 
 // Default 默认配置。
@@ -76,7 +86,10 @@ func Default() *Config {
 	c.Cooldown.SoftRate = "30s"
 	c.Cooldown.ErrThresh = 5
 	c.Cooldown.ErrCooldown = "2m"
-	c.Schedule.KeepaliveHours = []int{22}
+	c.Schedule.KeepaliveInterval = "30m"
+	c.Schedule.KeepaliveSkew = "15m"
+	c.Schedule.KeepaliveHours = []int{}
+	c.Schedule.AutoRecover = true
 	c.Schedule.DailyReward = true
 	c.Schedule.ClaimHour = 0
 	c.Schedule.ClaimMinute = 5
@@ -138,6 +151,15 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("P2A_DAILY_REWARD"); v != "" {
 		c.Schedule.DailyReward = v != "0" && !strings.EqualFold(v, "false")
 	}
+	if v := os.Getenv("P2A_KEEPALIVE_INTERVAL"); v != "" {
+		c.Schedule.KeepaliveInterval = v
+	}
+	if v := os.Getenv("P2A_KEEPALIVE_SKEW"); v != "" {
+		c.Schedule.KeepaliveSkew = v
+	}
+	if v := os.Getenv("P2A_AUTO_RECOVER"); v != "" {
+		c.Schedule.AutoRecover = v != "0" && !strings.EqualFold(v, "false")
+	}
 	if v := os.Getenv("P2A_CLAIM_HOUR"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Schedule.ClaimHour = n
@@ -180,6 +202,12 @@ func (c *Config) normalize() error {
 	if c.Cooldown.ErrThresh <= 0 {
 		c.Cooldown.ErrThresh = 5
 	}
+	if c.KeepaliveIntervalDur, err = parseInterval(c.Schedule.KeepaliveInterval, 30*time.Minute); err != nil {
+		return fmt.Errorf("schedule.keepalive_interval: %w", err)
+	}
+	if c.KeepaliveSkewDur, err = parseInterval(c.Schedule.KeepaliveSkew, 15*time.Minute); err != nil {
+		return fmt.Errorf("schedule.keepalive_skew: %w", err)
+	}
 	if c.Schedule.ClaimHour < 0 || c.Schedule.ClaimHour > 23 {
 		c.Schedule.ClaimHour = 0
 	}
@@ -209,6 +237,27 @@ func (c *Config) normalize() error {
 
 // LogLevelValue 把配置转成 logx 使用的级别。
 func (c *Config) LogLevelValue() logx.Level { return logx.Parse(c.LogLevel) }
+
+// parseInterval 解析调度用的时间间隔字符串。
+// 空串取默认值；"0" / "off" / "false" / "never" 表示关闭（返回 0）；
+// 负数视为关闭，避免把定时器配成负数后疯狂触发。
+func parseInterval(raw string, def time.Duration) (time.Duration, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "":
+		return def, nil
+	case "0", "off", "false", "no", "never":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, nil
+	}
+	return d, nil
+}
 
 // ThinkingOption 把配置转成 upstream 使用的思考策略。
 func (c *Config) ThinkingOption() upstream.ThinkingOption {

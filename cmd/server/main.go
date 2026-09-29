@@ -88,12 +88,15 @@ func main() {
 	up.DesktopKeyDir = filepath.Join(filepath.Dir(cfg.StateFile), "desktop-keys")
 
 	sch := scheduler.New(scheduler.Config{
-		Pool:           p,
-		Upstream:       up,
-		KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		DailyReward:    cfg.Schedule.DailyReward,
-		ClaimHour:      cfg.Schedule.ClaimHour,
-		ClaimMinute:    cfg.Schedule.ClaimMinute,
+		Pool:              p,
+		Upstream:          up,
+		KeepaliveHours:    cfg.Schedule.KeepaliveHours,
+		KeepaliveInterval: cfg.KeepaliveIntervalDur,
+		KeepaliveSkew:     cfg.KeepaliveSkewDur,
+		AutoRecover:       cfg.Schedule.AutoRecover,
+		DailyReward:       cfg.Schedule.DailyReward,
+		ClaimHour:         cfg.Schedule.ClaimHour,
+		ClaimMinute:       cfg.Schedule.ClaimMinute,
 	})
 
 	if !cfg.Admin.Enabled && cfg.Admin.PasswordHash == "" {
@@ -108,7 +111,18 @@ func main() {
 	var adminHandler *admin.Handler
 	if cfg.Admin.Enabled {
 		adminStore.SetConfigState(admin.ConfigState{
-			GetConfig:  func() map[string]any { return cfg.ToMap() },
+			// 从磁盘重读，让设置页保存后立刻看到新值；
+			// 回放启动时的内存快照会让「保存成功」看起来像没生效。
+			GetConfig: func() map[string]any {
+				fresh, err := Load(*cfgPath)
+				if err == nil {
+					err = MakeRelativePathsAbsolute(fresh, baseDir)
+				}
+				if err != nil {
+					return cfg.ToMap()
+				}
+				return fresh.ToMap()
+			},
 			SaveConfig: func(raw map[string]any) error { return SaveConfigMap(*cfgPath, raw) },
 		})
 		adminHandler = admin.NewHandler(adminStore, *cfgPath, &cfg.Admin.PasswordHash)
@@ -127,6 +141,7 @@ func main() {
 						"uid": status.UID, "nickname": status.Nickname, "has_api_key": status.HasAPI,
 						"cooling": status.Cooling, "until": status.Until, "reason": status.Reason,
 						"disabled": status.Disabled, "err_count": status.ErrCount,
+						"last_keepalive_at": status.LastKeepaliveAt,
 					}
 					if account := p.AuthByUID(status.UID); account != nil {
 						for key, value := range accountUsage(up, account) {
@@ -735,11 +750,25 @@ func SaveConfigMap(path string, raw map[string]any) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
+	// 先按启动路径校验再落盘：写错一个字段（例如 keepalive_interval 填成 "30"）
+	// 会让服务下次启动直接失败，不如当场报错让用户改。
+	if err := validateConfigBytes(encoded); err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, encoded, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// validateConfigBytes 用与启动一致的解析路径校验即将写入的配置。
+func validateConfigBytes(raw []byte) error {
+	c := Default()
+	if err := json.Unmarshal(raw, c); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	return c.normalize()
 }
 
 // StartOAuthLogin 生成 PKCE verifier 和授权链接；verifier 暂存到账号目录内，等待 code 提交。
@@ -878,13 +907,15 @@ func KeepaliveAccount(client *upstream.Client, pool *pool.Pool, uid string) erro
 	if acct == nil {
 		return fmt.Errorf("account not found")
 	}
-	if acct.NeedsRefresh(time.Minute) {
+	// 手动「保活」= 立刻换一份新 token，不等到快过期才刷。
+	if strings.TrimSpace(acct.RefreshToken) != "" {
 		if err := client.RefreshToken(acct); err != nil {
 			return err
 		}
 		if err := acct.SaveAtomic(); err != nil {
 			return err
 		}
+		pool.NoteKeepalive(uid)
 	}
 	if _, err := client.FetchProfile(acct); err != nil {
 		return err

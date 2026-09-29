@@ -12,7 +12,7 @@
 - 👥 **多账号池管理** — 自动轮转账号、错误计数阈值冷却、禁用、持久化状态
 - 🔁 **协议转换** — OpenAI 请求/响应 ↔ Anthropic Messages API 双向转换，流式 SSE 实时透传
 - 🔓 **OAuth 登录** — 半自动 PKCE 授权码流程，一键获取凭证
-- ⏰ **定时 keepalive** — 保持 token 活跃，接近过期时自动刷新
+- ⏰ **自动保活** — 后台定时检查 token，接近过期就自动刷新；被禁用的账号也会持续重试并在恢复后自动启用，全程无需手动干预
 - 🗺 **模型映射** — 模型名统一归一化（大小写、空白、`[1m]` 上下文后缀），历史商业名自动映射到当前公开模型 ID
 - 🛡 **模型被拒自动换号** — 上游拒绝某模型（套餐差异 / 阵发性风控）时换健康账号重试，不计错误、不触发冷却；全被拒才返回 `400 model_not_allowed`
 - ⚡ **显式思考开关** — 上游缺省会自行开启扩展思考（首字 10 秒+），本服务总是显式下发 `thinking`，默认关闭，可切 `auto`/`on`
@@ -110,10 +110,10 @@ http://127.0.0.1:7864/admin
 
 管理页支持：
 
-- 账号管理：生成 OAuth 授权链接、提交授权码、删除账号、手动领取开工奖励、手动刷新和保活（新账号默认昵称 `phanthy-MMDD`，同一天添加多个时自动补 uid 后四位区分）
+- 账号管理：生成 OAuth 授权链接、提交授权码、删除账号、手动领取开工奖励、手动刷新和「立即保活」（新账号默认昵称 `phanthy-MMDD`，同一天添加多个时自动补 uid 后四位区分）
 - 密钥分发：每个下游独立密钥、独立次数上限、模型白名单
 - 请求日志与统计
-- 图形化编辑常用配置（API Key、目录、上游地址、超时、思考模式与预算、冷却与保活、每日开工奖励），并提供原始 JSON 高级编辑
+- 图形化编辑常用配置（API Key、目录、上游地址、超时、思考模式与预算、冷却与自动保活、每日开工奖励），并提供原始 JSON 高级编辑
 
 ### 账号积分 / 额度池
 
@@ -153,7 +153,10 @@ http://127.0.0.1:7864/admin
     "err_cooldown": "10m"
   },
   "schedule": {
-    "keepalive_hours": [22],
+    "keepalive_interval": "30m",
+    "keepalive_skew": "15m",
+    "keepalive_hours": [],
+    "auto_recover": true,
     "daily_reward": true,
     "claim_hour": 0,
     "claim_minute": 5
@@ -185,7 +188,10 @@ http://127.0.0.1:7864/admin
 | `cooldown.soft_rate` | `P2A_SOFT_RATE` | `60s` | 限流冷却时长 |
 | `cooldown.err_threshold` | `P2A_ERR_THRESHOLD` | `3` | 连续错误阈值 |
 | `cooldown.err_cooldown` | `P2A_ERR_COOLDOWN` | `10m` | 错误冷却时长 |
-| `schedule.keepalive_hours` | — | `[22]` | 定时 keepalive 小时 |
+| `schedule.keepalive_interval` | `P2A_KEEPALIVE_INTERVAL` | `30m` | 自动保活检查间隔，填 `0` 关闭 |
+| `schedule.keepalive_skew` | `P2A_KEEPALIVE_SKEW` | `15m` | 保活提前量：token 剩余寿命小于它就刷新 |
+| `schedule.keepalive_hours` | — | `[]` | 额外的定点保活小时（可选，留空即关闭） |
+| `schedule.auto_recover` | `P2A_AUTO_RECOVER` | `true` | 被禁用的账号也参与保活，刷新成功后自动重新启用 |
 | `schedule.daily_reward` | `P2A_DAILY_REWARD` | `true` | 是否每天自动领取开工奖励 |
 | `schedule.claim_hour` | `P2A_CLAIM_HOUR` | `0` | 领取时刻（北京时间小时，0–23） |
 | `schedule.claim_minute` | `P2A_CLAIM_MINUTE` | `5` | 领取时刻（北京时间分钟，0–59） |
@@ -425,7 +431,7 @@ phanthycode2api/
 │   ├── pool/            # 账号池状态机（冷却、禁用、错误计数阈值）
 │   ├── upstream/        # 核心：OpenAI ↔ Anthropic 协议转换 + 思考开关 + SSE 流式转换 + 桌面端签名
 │   ├── server/          # OpenAI 兼容 HTTP 服务器，带轮转与错误分类 + 鉴权中间件
-│   ├── scheduler/       # 定时 keepalive + 每日开工奖励自动领取
+│   ├── scheduler/       # 自动保活 + 每日开工奖励自动领取
 │   ├── reward/          # 开工奖励口径换算（台账 + activities/summary 合并）
 │   ├── admin/           # Web 管理台（PBKDF2 登录、账号 / 密钥 / 日志 / 配置）
 │   └── logx/            # 分级日志（debug / info / error）

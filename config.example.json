@@ -12,7 +12,10 @@
     "err_cooldown": "10m"
   },
   "schedule": {
-    "keepalive_hours": [22],
+    "keepalive_interval": "30m",
+    "keepalive_skew": "15m",
+    "keepalive_hours": [],
+    "auto_recover": true,
     "daily_reward": true,
     "claim_hour": 0,
     "claim_minute": 5
