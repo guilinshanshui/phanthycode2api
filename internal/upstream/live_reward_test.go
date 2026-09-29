@@ -5,7 +5,7 @@
 //
 //	P2A_LIVE_AUTHS=<auths 目录> go test -tags live ./internal/upstream -run TestLive_DailyReward -v -timeout 300s
 //
-// 可选 P2A_LIVE_DESKTOP_KEY 指定安装身份文件（默认写到临时目录，不污染工作区）。
+// 可选 P2A_LIVE_DESKTOP_KEY_DIR 指定安装身份目录（默认写到临时目录，不污染工作区）。
 // 只读凭证、不做 refresh（refresh 会轮换 refresh_token，影响正在运行的实例）。
 package upstream
 
@@ -28,23 +28,22 @@ func TestLive_DailyReward(t *testing.T) {
 		t.Fatalf("LoadDir(%s): %v (n=%d)", dir, err, len(accts))
 	}
 
-	keyPath := os.Getenv("P2A_LIVE_DESKTOP_KEY")
-	if keyPath == "" {
-		keyPath = filepath.Join(t.TempDir(), "desktop-key.json")
+	keyDir := os.Getenv("P2A_LIVE_DESKTOP_KEY_DIR")
+	if keyDir == "" {
+		keyDir = filepath.Join(t.TempDir(), "desktop-keys")
 	}
 
 	cli := New("https://code.phanthy.com")
-	cli.DesktopKeyPath = keyPath
-
-	id, err := cli.DesktopIdentity()
-	if err != nil {
-		t.Fatalf("DesktopIdentity: %v", err)
-	}
-	t.Logf("installation id = %s", id.ID)
+	cli.DesktopKeyDir = keyDir
 
 	for _, acct := range accts {
 		acct := acct
 		t.Run(acct.UID, func(t *testing.T) {
+			id, err := cli.DesktopIdentity(acct.UID)
+			if err != nil {
+				t.Fatalf("DesktopIdentity: %v", err)
+			}
+			t.Logf("installation id = %s", id.ID)
 			if err := cli.RegisterDesktopInstallation(acct, id); err != nil {
 				if deadSession(err) {
 					t.Skipf("会话已失效，需重新登录: %v", err)

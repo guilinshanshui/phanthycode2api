@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,6 +100,44 @@ func TestLoadOrCreateDesktopIdentity(t *testing.T) {
 	}
 }
 
+// TestDesktopIdentityIsPerAccount 每个账号必须拿到不同的安装身份：
+// 上游的 installation id 全局唯一，共用一份身份时第二个账号会被判
+// desktop_installation_required（实测 401），拿不到 activities/summary。
+func TestDesktopIdentityIsPerAccount(t *testing.T) {
+	cli := New("http://127.0.0.1:1")
+	cli.DesktopKeyDir = t.TempDir()
+
+	first, err := cli.DesktopIdentity("phanthy-1001")
+	if err != nil {
+		t.Fatalf("DesktopIdentity(1001): %v", err)
+	}
+	second, err := cli.DesktopIdentity("phanthy-1002")
+	if err != nil {
+		t.Fatalf("DesktopIdentity(1002): %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("两个账号拿到同一个安装身份：%s", first.ID)
+	}
+	again, err := cli.DesktopIdentity("phanthy-1001")
+	if err != nil {
+		t.Fatalf("DesktopIdentity(1001) 二次: %v", err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("同一账号换了身份：%s → %s", first.ID, again.ID)
+	}
+	// 落盘文件名必须能安全承载上游返回的 uid。
+	if _, err := cli.DesktopIdentity("../escape/../x y"); err != nil {
+		t.Fatalf("异常 uid 不应报错: %v", err)
+	}
+	entries, err := os.ReadDir(cli.DesktopKeyDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("落盘文件数 = %d, want 3", len(entries))
+	}
+}
+
 // TestClaimDailyLoginSendsSignedRequest 校验领取请求的路径、幂等键与签名头。
 func TestClaimDailyLoginSendsSignedRequest(t *testing.T) {
 	var got struct {
@@ -121,8 +160,8 @@ func TestClaimDailyLoginSendsSignedRequest(t *testing.T) {
 	defer srv.Close()
 
 	cli := New(srv.URL)
-	cli.DesktopKeyPath = filepath.Join(t.TempDir(), "desktop-key.json")
-	id, err := cli.DesktopIdentity()
+	cli.DesktopKeyDir = t.TempDir()
+	id, err := cli.DesktopIdentity("u1")
 	if err != nil {
 		t.Fatalf("DesktopIdentity: %v", err)
 	}
@@ -172,8 +211,8 @@ func TestRegisterDesktopInstallationTreats409AsSuccess(t *testing.T) {
 	defer srv.Close()
 
 	cli := New(srv.URL)
-	cli.DesktopKeyPath = filepath.Join(t.TempDir(), "desktop-key.json")
-	id, err := cli.DesktopIdentity()
+	cli.DesktopKeyDir = t.TempDir()
+	id, err := cli.DesktopIdentity("u1")
 	if err != nil {
 		t.Fatalf("DesktopIdentity: %v", err)
 	}

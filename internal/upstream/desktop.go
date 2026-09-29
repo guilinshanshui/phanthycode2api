@@ -62,7 +62,7 @@ func InstallationID(pub ed25519.PublicKey) string {
 }
 
 // LoadOrCreateDesktopIdentity 读取安装身份；文件不存在或损坏时生成一份并落盘。
-// 身份只需生成一次，之后所有账号共用（上游按账号 × 安装登记）。
+// 身份只需生成一次，之后长期复用（换文件等于换一台设备）。
 func LoadOrCreateDesktopIdentity(path string) (*DesktopIdentity, error) {
 	if raw, err := os.ReadFile(path); err == nil {
 		var f desktopKeyFile
@@ -131,18 +131,43 @@ func (d *DesktopIdentity) sign(method, path, ts, nonce, idem string, body []byte
 	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(d.key, []byte(payload)))
 }
 
-// DesktopIdentity 惰性加载（首次生成）进程内共用的安装身份。
-func (c *Client) DesktopIdentity() (*DesktopIdentity, error) {
+// desktopKeyPath 返回某个账号的安装身份文件路径。
+// uid 会被规整成安全文件名，避免上游返回的奇怪字符逃出目录。
+func (c *Client) desktopKeyPath(uid string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_' || r == '.':
+			return r
+		default:
+			return '_'
+		}
+	}, uid)
+	if safe == "" {
+		safe = "default"
+	}
+	return filepath.Join(c.DesktopKeyDir, safe+".json")
+}
+
+// DesktopIdentity 惰性加载（首次生成）某个账号的安装身份，进程内按 uid 缓存。
+//
+// 每个账号必须用各自的身份：上游的 installation id 全局唯一，登记后绑定到
+// 首个账号，其他账号再用同一个 id 调 activities/* 会被判 desktop_installation_required。
+func (c *Client) DesktopIdentity(uid string) (*DesktopIdentity, error) {
 	c.desktopMu.Lock()
 	defer c.desktopMu.Unlock()
-	if c.desktopID != nil {
-		return c.desktopID, nil
+	if id, ok := c.desktopIDs[uid]; ok {
+		return id, nil
 	}
-	id, err := LoadOrCreateDesktopIdentity(c.DesktopKeyPath)
+	id, err := LoadOrCreateDesktopIdentity(c.desktopKeyPath(uid))
 	if err != nil {
 		return nil, err
 	}
-	c.desktopID = id
+	if c.desktopIDs == nil {
+		c.desktopIDs = map[string]*DesktopIdentity{}
+	}
+	c.desktopIDs[uid] = id
 	return id, nil
 }
 

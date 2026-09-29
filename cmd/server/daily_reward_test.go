@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,7 +96,7 @@ func summaryStub(t *testing.T, body string, status int) (*upstream.Client, *bool
 	t.Cleanup(srv.Close)
 
 	client := upstream.New(srv.URL)
-	client.DesktopKeyPath = filepath.Join(t.TempDir(), "desktop-key.json")
+	client.DesktopKeyDir = t.TempDir()
 	return client, &hit
 }
 

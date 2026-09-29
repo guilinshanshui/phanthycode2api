@@ -84,8 +84,8 @@ func main() {
 
 	up := upstream.New(cfg.BaseURL)
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
-	// 桌面端安装身份（每日开工奖励签名用）与 state.json 放在同一数据目录。
-	up.DesktopKeyPath = filepath.Join(filepath.Dir(cfg.StateFile), "desktop-key.json")
+	// 桌面端安装身份（每日开工奖励签名用）与 state.json 放在同一数据目录，每个账号一份。
+	up.DesktopKeyDir = filepath.Join(filepath.Dir(cfg.StateFile), "desktop-keys")
 
 	sch := scheduler.New(scheduler.Config{
 		Pool:           p,
@@ -413,7 +413,7 @@ func attachDaily(client *upstream.Client, account *auth.Auth, data map[string]an
 	if ledgerOK {
 		daily = reward.Analyze(rewards, time.Now())
 	}
-	id, idErr := client.DesktopIdentity()
+	id, idErr := client.DesktopIdentity(account.UID)
 	if idErr != nil {
 		data["daily_summary_error"] = "桌面端安装身份不可用: " + idErr.Error()
 	} else if summary, sumErr := client.ActivitySummary(account, id); sumErr == nil {

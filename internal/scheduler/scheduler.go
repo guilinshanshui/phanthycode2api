@@ -118,11 +118,6 @@ func (s *Scheduler) Run(ctx context.Context) {
 // RunDailyClaimNow 为每个账号登记桌面端安装并领取当天开工奖励。
 // 领取接口幂等（当天已发放时返回 already_granted），可安全地重复执行。
 func (s *Scheduler) RunDailyClaimNow() {
-	id, err := s.cfg.Upstream.DesktopIdentity()
-	if err != nil {
-		logx.Errorf("开工奖励: 加载桌面端身份失败: %v", err)
-		return
-	}
 	ok, skipped, failed := 0, 0, 0
 	for _, st := range s.cfg.Pool.List() {
 		account := s.cfg.Pool.AuthByUID(st.UID)
@@ -137,7 +132,7 @@ func (s *Scheduler) RunDailyClaimNow() {
 			skipped++
 			continue
 		}
-		if err := s.claimDaily(account, id); err != nil {
+		if err := s.claimDaily(account); err != nil {
 			failed++
 			continue
 		}
@@ -154,16 +149,18 @@ func (s *Scheduler) ClaimForUID(uid string) error {
 	if account == nil {
 		return fmt.Errorf("account not found")
 	}
-	id, err := s.cfg.Upstream.DesktopIdentity()
-	if err != nil {
-		return err
-	}
-	return s.claimDaily(account, id)
+	return s.claimDaily(account)
 }
 
 // claimDaily 登记安装 → 查询状态 → 领取，三步都幂等。
+// 安装身份按账号区分：上游的 installation id 全局唯一且绑定首个登记的账号。
 // 每一步都会记日志，返回值供管理台手动领取时回显。
-func (s *Scheduler) claimDaily(account *auth.Auth, id *upstream.DesktopIdentity) error {
+func (s *Scheduler) claimDaily(account *auth.Auth) error {
+	id, err := s.cfg.Upstream.DesktopIdentity(account.UID)
+	if err != nil {
+		logx.Errorf("开工奖励 %s: 加载桌面端身份失败: %v", account.Nickname, err)
+		return fmt.Errorf("加载桌面端身份失败: %w", err)
+	}
 	if err := s.cfg.Upstream.RegisterDesktopInstallation(account, id); err != nil {
 		logx.Errorf("开工奖励 %s: 登记桌面端安装失败: %v", account.Nickname, err)
 		return fmt.Errorf("登记桌面端安装失败: %w", err)
